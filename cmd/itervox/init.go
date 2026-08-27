@@ -30,6 +30,10 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		b.WriteString("  api_key: $LINEAR_API_KEY          # export LINEAR_API_KEY=lin_api_...\n")
 	case "github":
 		b.WriteString("  api_key: $GITHUB_TOKEN            # export GITHUB_TOKEN=ghp_...\n")
+	case "jira":
+		b.WriteString("  api_key: $JIRA_API_TOKEN          # export JIRA_API_TOKEN=... (Atlassian API token, not your password)\n")
+		b.WriteString("  username: you@example.com         # Atlassian account email paired with the API token\n")
+		b.WriteString("  endpoint: https://yourdomain.atlassian.net\n")
 	}
 
 	slug := "owner/repo"
@@ -40,7 +44,15 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 			slug = info.Owner + "/" + info.Repo
 		}
 	}
-	if trackerKind == "linear" {
+	if trackerKind == "jira" {
+		b.WriteString("  project_slug: PROJ                 # Jira project key\n")
+		b.WriteString("  active_states: [\"In Progress\"]\n")
+		b.WriteString("  terminal_states: [\"Done\", \"Cancelled\"]\n")
+		b.WriteString("  working_state: \"In Progress\"       # Status applied when an agent starts working.\n")
+		b.WriteString("  completion_state: \"In Review\"      # Status applied when the agent finishes.\n")
+		b.WriteString("  backlog_states: [\"Backlog\"]         # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  default_issue_type: Task           # Issue type used by CreateIssue.\n")
+	} else if trackerKind == "linear" {
 		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
 		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
 		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
@@ -244,7 +256,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 
 	b.WriteString("## Step 2 — Create a branch\n\n")
 	b.WriteString("```bash\n")
-	if trackerKind == "linear" {
+	if trackerKind == "linear" || trackerKind == "jira" {
 		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | downcase }}\n")
 	} else {
 		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | replace: \"#\", \"\" | downcase }}\n")
@@ -301,6 +313,15 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		b.WriteString("  -H \"Content-Type: application/json\" \\\n")
 		b.WriteString("  -d \"{\\\"query\\\":\\\"mutation { commentCreate(input: { issueId: \\\\\\\"{{ issue.id }}\\\\\\\", body: \\\\\\\"PR: ${PR_URL}\\\\\\\" }) { success } }\\\"}\"\n")
 		b.WriteString("```\n\n---\n\n")
+	} else if trackerKind == "jira" {
+		b.WriteString("Jira:\n\n")
+		b.WriteString("```bash\n")
+		b.WriteString("PR_URL=$(gh pr view --json url -q .url)\n")
+		b.WriteString("curl -s -X POST https://yourdomain.atlassian.net/rest/api/3/issue/{{ issue.id }}/comment \\\n")
+		b.WriteString("  -u \"$JIRA_USERNAME:$JIRA_API_TOKEN\" \\\n")
+		b.WriteString("  -H \"Content-Type: application/json\" \\\n")
+		b.WriteString("  -d \"{\\\"body\\\":{\\\"type\\\":\\\"doc\\\",\\\"version\\\":1,\\\"content\\\":[{\\\"type\\\":\\\"paragraph\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"PR: ${PR_URL}\\\"}]}]}}\"\n")
+		b.WriteString("```\n\n---\n\n")
 	} else {
 		b.WriteString("GitHub:\n\n")
 		b.WriteString("```bash\n")
@@ -329,7 +350,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 // generates a WORKFLOW.md pre-filled with discovered values.
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	trackerKind := fs.String("tracker", "", "tracker kind: linear or github (required)")
+	trackerKind := fs.String("tracker", "", "tracker kind: linear, github, or jira (required)")
 	runner := fs.String("runner", "claude", "default runner backend: claude or codex")
 	output := fs.String("output", "WORKFLOW.md", "output file path")
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "workflow path for --update")
@@ -392,14 +413,14 @@ func runInit(args []string) {
 	}
 
 	switch *trackerKind {
-	case "linear", "github":
+	case "linear", "github", "jira":
 		// valid
 	case "":
-		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear or github)")
+		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear, github, or jira)")
 		fs.Usage()
 		fatalExit(1)
 	default:
-		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github)\n", *trackerKind)
+		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github, jira)\n", *trackerKind)
 		fatalExit(1)
 	}
 

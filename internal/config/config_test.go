@@ -181,6 +181,23 @@ func TestFailedStateExplicit(t *testing.T) {
 	assert.Equal(t, "Backlog", cfg.Tracker.FailedState)
 }
 
+func TestTrackerUsernameAndDefaultIssueTypeExplicit(t *testing.T) {
+	content := "---\ntracker:\n  kind: jira\n  api_key: test-token\n  project_slug: PROJ\n  username: bot@example.com\n  default_issue_type: Bug\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "bot@example.com", cfg.Tracker.Username)
+	assert.Equal(t, "Bug", cfg.Tracker.DefaultIssueType)
+}
+
+func TestTrackerUsernameAndDefaultIssueTypeDefaults(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.Tracker.Username)
+	assert.Equal(t, "Task", cfg.Tracker.DefaultIssueType)
+}
+
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {
 	content := minimal("agent:\n  max_concurrent_agents_by_state:\n    Todo: 3\n    IN PROGRESS: 2\n")
 	path := workflowWithContent(t, content)

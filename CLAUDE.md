@@ -4,7 +4,7 @@
 
 **Itervox** is a long-running daemon (Go 1.25.11) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
-It polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and
+It polls Linear, GitHub Issues, or Jira, spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
 
 Config lives entirely in one `WORKFLOW.md` file per project (YAML front matter +
@@ -43,8 +43,9 @@ Testing specifics not obvious from the commands above:
 - **TUI tests** use `charmbracelet/x/exp/teatest` (e.g. `model_teatest_test.go`)
   with catwalk golden files. Regenerate golden files via `make tui-golden`
   after intentional render changes.
-- **Integration tests** that hit a real tracker API are gated behind a build
-  tag; they are NOT run by default with `go test ./...`.
+- **Tracker adapter tests** (Linear, GitHub, Jira) are `httptest`-mocked unit
+  tests with no build tag — they run in the default `go test ./...` set.
+  There is currently no integration suite that hits a real tracker API.
 - **Frontend tests** use Vitest + Testing Library. Coverage gates live in
   `web/vitest.config.ts`; `pnpm test:coverage` is the canonical entry point.
 
@@ -189,7 +190,7 @@ gate the change.
 ## Package dependency order (no circular deps)
 
 ```
-domain ─────┬── tracker (interface + adapters: linear, github, memory)
+domain ─────┬── tracker (interface + adapters: linear, github, jira, memory)
             ├── prompt (Liquid template rendering)
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)

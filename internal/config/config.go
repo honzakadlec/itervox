@@ -47,6 +47,14 @@ type TrackerConfig struct {
 	// FailedState is the state to move issues to when max retries are exhausted.
 	// When empty, issues are paused instead of transitioned.
 	FailedState string
+	// Username is the account identifier (e.g. email) paired with APIKey for
+	// trackers using HTTP Basic auth (Jira Cloud). Not a secret; unused by
+	// trackers that authenticate with APIKey alone (Linear, GitHub).
+	Username string
+	// DefaultIssueType names the issue type (e.g. "Task", "Bug") used when
+	// creating follow-up issues on trackers that require one (Jira). Ignored
+	// by trackers that don't have an issue-type concept.
+	DefaultIssueType string
 }
 
 // PollingConfig holds polling settings.
@@ -404,6 +412,8 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	}
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
+	cfg.Tracker.Username = strField(tracker, "username", "")
+	cfg.Tracker.DefaultIssueType = strField(tracker, "default_issue_type", "Task")
 
 	// Polling
 	polling := nestedMap(raw, "polling")

@@ -41,6 +41,7 @@ import (
 	"github.com/vnovick/itervox/internal/statusui"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
+	"github.com/vnovick/itervox/internal/tracker/jira"
 	"github.com/vnovick/itervox/internal/tracker/linear"
 	"github.com/vnovick/itervox/internal/workflow"
 	"github.com/vnovick/itervox/internal/workspace"
@@ -1547,11 +1548,22 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			BacklogStates:  cfg.Tracker.BacklogStates,
 			Endpoint:       cfg.Tracker.Endpoint,
 		}), nil
+	case "jira":
+		return jira.NewClient(jira.ClientConfig{
+			APIKey:           cfg.Tracker.APIKey,
+			Username:         cfg.Tracker.Username,
+			Endpoint:         cfg.Tracker.Endpoint,
+			ProjectSlug:      cfg.Tracker.ProjectSlug,
+			ActiveStates:     cfg.Tracker.ActiveStates,
+			TerminalStates:   cfg.Tracker.TerminalStates,
+			BacklogStates:    cfg.Tracker.BacklogStates,
+			DefaultIssueType: cfg.Tracker.DefaultIssueType,
+		}), nil
 	case "memory":
 		issues := tracker.GenerateDemoIssues(10)
 		return tracker.NewMemoryTracker(issues, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates), nil
 	default:
-		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, memory)", cfg.Tracker.Kind)
+		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, jira, memory)", cfg.Tracker.Kind)
 	}
 }
 

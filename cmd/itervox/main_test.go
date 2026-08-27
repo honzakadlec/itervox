@@ -316,6 +316,37 @@ func TestGenerateWorkflow_UsesSchema2ProfileFiles(t *testing.T) {
 	assert.NotContains(t, content, "      prompt:")
 }
 
+func TestBuildTrackerJiraKind(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			Kind:             "jira",
+			APIKey:           "token",
+			Username:         "bot@example.com",
+			Endpoint:         "https://example.atlassian.net",
+			ProjectSlug:      "PROJ",
+			ActiveStates:     []string{"In Progress"},
+			TerminalStates:   []string{"Done"},
+			DefaultIssueType: "Task",
+		},
+	}
+	tr, err := buildTracker(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+}
+
+func TestGenerateWorkflow_JiraTrackerFields(t *testing.T) {
+	content := generateWorkflow("jira", "claude", repoInfo{ProjectName: "demo", Owner: "acme", Repo: "demo", DefaultBranch: "main"})
+
+	assert.Contains(t, content, "kind: jira")
+	assert.Contains(t, content, "$JIRA_API_TOKEN")
+	assert.Contains(t, content, "username:")
+	assert.Contains(t, content, "endpoint:")
+	assert.Contains(t, content, "project_slug:")
+	assert.Contains(t, content, "default_issue_type:")
+	assert.Contains(t, content, "git checkout -b {{ issue.branch_name | default: issue.identifier | downcase }}")
+	assert.Contains(t, content, "rest/api/3/issue/{{ issue.id }}/comment")
+}
+
 func TestWriteInitAgentFiles_CreatesAgentFilesAndGitignore(t *testing.T) {
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")

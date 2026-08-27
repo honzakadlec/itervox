@@ -19,6 +19,7 @@ import (
 var supportedTrackerKinds = map[string]bool{
 	"linear": true,
 	"github": true,
+	"jira":   true,
 	"memory": true,
 }
 
@@ -156,22 +157,33 @@ func ValidateDispatch(cfg *Config) error {
 
 	// Check 1: tracker.kind present and supported
 	if cfg.Tracker.Kind == "" {
-		return fmt.Errorf("missing tracker.kind: must be one of: linear, github")
+		return fmt.Errorf("missing tracker.kind: must be one of: linear, github, jira")
 	}
 	if !supportedTrackerKinds[cfg.Tracker.Kind] {
-		return fmt.Errorf("unsupported_tracker_kind: %q (must be linear or github)", cfg.Tracker.Kind)
+		return fmt.Errorf("unsupported_tracker_kind: %q (must be linear, github, or jira)", cfg.Tracker.Kind)
 	}
 
 	// Check 3: tracker.api_key present after $VAR resolution.
 	// The memory tracker is internal-only and needs no credentials, so this
-	// gate only applies to remote trackers (linear, github).
+	// gate only applies to remote trackers (linear, github, jira).
 	if cfg.Tracker.Kind != "memory" && cfg.Tracker.APIKey == "" {
 		return fmt.Errorf("missing tracker.api_key: must be set or resolved from $VAR")
 	}
 
-	// Check 4: tracker.project_slug present (required for GitHub; optional for Linear)
-	if cfg.Tracker.Kind == "github" && cfg.Tracker.ProjectSlug == "" {
-		return fmt.Errorf("missing tracker.project_slug: required for GitHub (owner/repo)")
+	// Check 4: tracker.project_slug present (required for GitHub and Jira; optional for Linear)
+	if (cfg.Tracker.Kind == "github" || cfg.Tracker.Kind == "jira") && cfg.Tracker.ProjectSlug == "" {
+		return fmt.Errorf("missing tracker.project_slug: required for GitHub (owner/repo) and Jira (project key)")
+	}
+
+	// Check 4b: tracker.username present for Jira (paired with api_key for HTTP Basic auth).
+	if cfg.Tracker.Kind == "jira" && cfg.Tracker.Username == "" {
+		return fmt.Errorf("missing tracker.username: required for Jira (Atlassian account email)")
+	}
+
+	// Check 4c: tracker.endpoint present for Jira. Unlike GitHub, Jira Cloud has
+	// no single well-known API host — each site is a distinct subdomain.
+	if cfg.Tracker.Kind == "jira" && cfg.Tracker.Endpoint == "" {
+		return fmt.Errorf("missing tracker.endpoint: required for Jira (e.g. https://yourdomain.atlassian.net)")
 	}
 
 	// Check 5: agent.command present and non-empty

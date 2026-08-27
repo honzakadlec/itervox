@@ -41,7 +41,7 @@ func TestValidateDispatchSchemaErrorPrecedesOtherValidation(t *testing.T) {
 }
 
 func TestValidateDispatchFailsUnsupportedTrackerKind(t *testing.T) {
-	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: jira\n  api_key: key\n  project_slug: proj\n---\n\nPrompt.\n"
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: asana\n  api_key: key\n  project_slug: proj\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
@@ -102,6 +102,45 @@ func TestValidateDispatchGitHubKindAccepted(t *testing.T) {
 	require.NoError(t, err)
 	err = config.ValidateDispatch(cfg)
 	assert.NoError(t, err)
+}
+
+func TestValidateDispatchJiraKindAccepted(t *testing.T) {
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: jira\n  api_key: token\n  project_slug: PROJ\n  username: bot@example.com\n  endpoint: https://example.atlassian.net\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	assert.NoError(t, err)
+}
+
+func TestValidateDispatchJiraFailsMissingProjectSlug(t *testing.T) {
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: jira\n  api_key: token\n  username: bot@example.com\n  endpoint: https://example.atlassian.net\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracker.project_slug")
+}
+
+func TestValidateDispatchJiraFailsMissingEndpoint(t *testing.T) {
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: jira\n  api_key: token\n  project_slug: PROJ\n  username: bot@example.com\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracker.endpoint")
+}
+
+func TestValidateDispatchJiraFailsMissingUsername(t *testing.T) {
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: jira\n  api_key: token\n  project_slug: PROJ\n  endpoint: https://example.atlassian.net\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracker.username")
 }
 
 // New (v0.2.0): auto_clear and auto_review now coexist. The clear is

@@ -85,18 +85,22 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | **required** | Tracker backend. `"linear"` or `"github"`. |
-| `endpoint` | string | `https://api.linear.app/graphql` | GraphQL endpoint (Linear only). Omit for GitHub — the client uses the GitHub API automatically. |
-| `api_key` | string | **required** | API token. Use `$VAR_NAME` to read from an environment variable (recommended). |
-| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. |
-| `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. |
+| `kind` | string | **required** | Tracker backend. `"linear"`, `"github"`, or `"jira"`. |
+| `endpoint` | string | `https://api.linear.app/graphql` | GraphQL endpoint (Linear only) or Jira Cloud site base URL (**required for Jira**, e.g. `https://yourdomain.atlassian.net`). Omit for GitHub — the client uses the GitHub API automatically. |
+| `api_key` | string | **required** | API token. Use `$VAR_NAME` to read from an environment variable (recommended). For Jira, this is an [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens), paired with `username`. |
+| `username` | string | `""` | **Jira only, required.** Atlassian account email paired with `api_key` for HTTP Basic auth. Not a secret — safe to set as a plain value. |
+| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. For Jira: the project key (e.g. `"PROJ"`). |
+| `default_issue_type` | string | `"Task"` | **Jira only.** Issue type used when Itervox creates a follow-up issue. Must match an issue type configured in your Jira project. |
+| `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. For Jira, these are workflow status names (e.g. `"In Progress"`), matched literally — no JQL authoring needed. |
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
-| `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
+| `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub, Jira) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
 
 **GitHub note:** GitHub Issues does not have built-in workflow states. Itervox simulates states using labels. Create labels in your repository settings that match the values you configure (e.g. create a label named `todo`, another named `in-review`).
+
+**Jira note:** Jira Cloud only (Jira Server/Data Center is not supported). State names must match your project's actual workflow status names exactly (case-insensitive). Comments are posted as plain-text Atlassian Document Format (ADF) — markdown formatting characters are not rendered. Branch tracking uses a plain marker comment (`itervox:branch:<name>`) since Jira's ADF format has no hidden-comment equivalent to GitHub's HTML-comment trick, so this comment is visible on the issue.
 
 ```yaml
 # Linear example
@@ -118,6 +122,18 @@ tracker:
   active_states: ["todo"]
   terminal_states: ["done", "cancelled"]
   completion_state: "in-review"
+
+# Jira example
+tracker:
+  kind: jira
+  endpoint: https://yourdomain.atlassian.net
+  api_key: $JIRA_API_TOKEN
+  username: bot@example.com
+  project_slug: PROJ
+  default_issue_type: Task
+  active_states: ["In Progress"]
+  terminal_states: ["Done", "Cancelled"]
+  completion_state: "In Review"
 ```
 
 ---

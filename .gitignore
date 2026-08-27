@@ -36,3 +36,5 @@ site/.astro/
 marketing
 # Release-audit working docs (local only)
 v0.2.0/
+.tokensave
+WORKFLOW.md.bak
