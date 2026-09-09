@@ -75,7 +75,7 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 			if re, ok := state.RetryAttempts[id]; ok {
 				prevAttempt = re.Attempt
 			}
-			state = ScheduleRetry(state, id, prevAttempt+1, entry.Issue.Identifier, "stall_timeout", now, BackoffMs(prevAttempt+1, cfg.Agent.MaxRetryBackoffMs))
+			state = ScheduleRetry(state, id, prevAttempt+1, entry.Issue.Identifier, "stall_timeout", now, BackoffMs(prevAttempt+1, cfg.Agent.MaxRetryBackoffMs), entry.Automation)
 			// Include the RunEntry so handleEvent can record stall history.
 			// Claim and retry management have already been performed inline above;
 			// the event loop will see TerminalStalled and only call recordHistory.

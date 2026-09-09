@@ -91,7 +91,20 @@ func ineligibleReasonShared(issue domain.Issue, state State, cfg *config.Config,
 	if blocker, blocked := firstUnresolvedBlocker(issue, state); blocked {
 		return "blocked_by:" + blockerIdentifier(blocker)
 	}
+	if cfg.Tracker.RequiredLabel != "" && !hasLabelFold(issue.Labels, cfg.Tracker.RequiredLabel) {
+		return "missing_required_label"
+	}
 	return ""
+}
+
+// hasLabelFold reports whether labels contains label, case-insensitively.
+func hasLabelFold(labels []string, label string) bool {
+	for _, l := range labels {
+		if strings.EqualFold(l, label) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsEligible returns true when an issue passes all dispatch eligibility checks.

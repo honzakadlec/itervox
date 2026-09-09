@@ -34,7 +34,7 @@ func TestScheduleRetry(t *testing.T) {
 	cfg := baseConfig()
 	state := orchestrator.NewState(cfg)
 	now := time.Now()
-	state = orchestrator.ScheduleRetry(state, "id1", 1, "ENG-1", "some error", now, 10000)
+	state = orchestrator.ScheduleRetry(state, "id1", 1, "ENG-1", "some error", now, 10000, nil)
 	entry, ok := state.RetryAttempts["id1"]
 	assert.True(t, ok)
 	assert.Equal(t, "id1", entry.IssueID)
@@ -49,7 +49,7 @@ func TestCancelRetry(t *testing.T) {
 	cfg := baseConfig()
 	state := orchestrator.NewState(cfg)
 	now := time.Now()
-	state = orchestrator.ScheduleRetry(state, "id1", 1, "ENG-1", "", now, 10000)
+	state = orchestrator.ScheduleRetry(state, "id1", 1, "ENG-1", "", now, 10000, nil)
 	state = orchestrator.CancelRetry(state, "id1")
 	_, ok := state.RetryAttempts["id1"]
 	assert.False(t, ok)

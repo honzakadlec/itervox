@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -695,6 +696,31 @@ func (o *Orchestrator) SetAutomationsCfg(cfgs []config.AutomationConfig) {
 	o.cfgMu.Lock()
 	o.cfg.Automations = cfgs
 	o.cfgMu.Unlock()
+}
+
+// isKnownPipelineState reports whether s is a state that a legitimate,
+// non-abandoned issue can sit in outside ActiveStates: the configured
+// CompletionState, or the trigger.state of any issue_entered_state
+// automation. Both are states an automation-dispatched worker (e.g. a
+// visual-tester or deploy-checker profile fired by issue_entered_state) can
+// be paused in awaiting input, so a resume reply for those states must not
+// be treated as stale the way a reply for an abandoned/backlog state is.
+func (o *Orchestrator) isKnownPipelineState(s string) bool {
+	o.cfgMu.RLock()
+	completion := o.cfg.Tracker.CompletionState
+	automations := o.cfg.Automations
+	o.cfgMu.RUnlock()
+
+	if completion != "" && strings.EqualFold(s, completion) {
+		return true
+	}
+	for _, a := range automations {
+		if a.Trigger.Type == config.AutomationTriggerIssueEnteredState &&
+			a.Trigger.State != "" && strings.EqualFold(s, a.Trigger.State) {
+			return true
+		}
+	}
+	return false
 }
 
 // SSHHostsCfg returns a copy of the current SSH host list and descriptions map.

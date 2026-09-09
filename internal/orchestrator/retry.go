@@ -33,9 +33,12 @@ func BackoffMs(attempt, maxMs int) int {
 	return min(delay, maxMs)
 }
 
-// ScheduleRetry inserts a RetryEntry for issueID and marks it claimed.
-// delayMs is the delay from now until the retry fires.
-func ScheduleRetry(state State, issueID string, attempt int, identifier, errMsg string, now time.Time, delayMs int) State {
+// ScheduleRetry inserts a RetryEntry for issueID and marks it claimed. delayMs
+// is the delay from now until the retry fires. automation mirrors the failed
+// run's RunEntry.Automation (nil for ordinary worker/reviewer retries) and
+// lets fireRetries skip the ActiveStates gate and replay via
+// startAutomationRun for automation-kind retries.
+func ScheduleRetry(state State, issueID string, attempt int, identifier, errMsg string, now time.Time, delayMs int, automation *AutomationDispatch) State {
 	dueAt := now.Add(time.Duration(delayMs) * time.Millisecond)
 	var errPtr *string
 	if errMsg != "" {
@@ -48,6 +51,7 @@ func ScheduleRetry(state State, issueID string, attempt int, identifier, errMsg 
 		Attempt:    attempt,
 		DueAt:      dueAt,
 		Error:      errPtr,
+		Automation: automation,
 	}
 	state.Claimed[issueID] = struct{}{}
 	return state

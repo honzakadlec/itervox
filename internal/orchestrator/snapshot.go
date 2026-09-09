@@ -306,6 +306,9 @@ type inputRequiredDisk struct {
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
 	QuestionAuthorName string `json:"question_author_name,omitempty"`
 	QueuedAt           string `json:"queued_at"`
+	Kind               string `json:"kind,omitempty"`
+	AutomationID       string `json:"automation_id,omitempty"`
+	TriggerType        string `json:"trigger_type,omitempty"`
 }
 
 type pendingInputResumeDisk struct {
@@ -323,6 +326,9 @@ type pendingInputResumeDisk struct {
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
 	QuestionAuthorName string `json:"question_author_name,omitempty"`
 	QueuedAt           string `json:"queued_at"`
+	Kind               string `json:"kind,omitempty"`
+	AutomationID       string `json:"automation_id,omitempty"`
+	TriggerType        string `json:"trigger_type,omitempty"`
 }
 
 type inputRequiredStateDisk struct {
@@ -370,6 +376,9 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           v.QueuedAt.Format(time.RFC3339),
+			Kind:               v.Kind,
+			AutomationID:       v.AutomationID,
+			TriggerType:        v.TriggerType,
 		}
 	}
 	pendingDisk := make(map[string]pendingInputResumeDisk, len(pending))
@@ -389,6 +398,9 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           v.QueuedAt.Format(time.RFC3339),
+			Kind:               v.Kind,
+			AutomationID:       v.AutomationID,
+			TriggerType:        v.TriggerType,
 		}
 	}
 	data, err := json.Marshal(inputRequiredStateDisk{
@@ -459,6 +471,9 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           queuedAt,
+			Kind:               v.Kind,
+			AutomationID:       v.AutomationID,
+			TriggerType:        v.TriggerType,
 		}
 	}
 	for k, v := range pending {
@@ -478,6 +493,9 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           queuedAt,
+			Kind:               v.Kind,
+			AutomationID:       v.AutomationID,
+			TriggerType:        v.TriggerType,
 		}
 	}
 	// gaps_11 G-2 — mirror loadPausedFromDisk: treat persistence-restored

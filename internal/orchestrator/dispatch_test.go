@@ -52,6 +52,31 @@ func TestIsEligibleAlreadyClaimed(t *testing.T) {
 	assert.False(t, orchestrator.IsEligible(issue, state, cfg))
 }
 
+func TestIsEligibleRequiredLabelMissing(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Tracker.RequiredLabel = "ready_for_agent"
+	state := orchestrator.NewState(cfg)
+	issue := makeIssue("id1", "ENG-1", "In Progress", nil, nil)
+	assert.False(t, orchestrator.IsEligible(issue, state, cfg))
+	assert.Equal(t, "missing_required_label", orchestrator.IneligibleReason(issue, state, cfg))
+}
+
+func TestIsEligibleRequiredLabelPresentCaseInsensitive(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Tracker.RequiredLabel = "ready_for_agent"
+	state := orchestrator.NewState(cfg)
+	issue := makeIssue("id1", "ENG-1", "In Progress", nil, nil)
+	issue.Labels = []string{"Ready_For_Agent"}
+	assert.True(t, orchestrator.IsEligible(issue, state, cfg))
+}
+
+func TestIsEligibleNoRequiredLabelConfiguredIgnoresLabels(t *testing.T) {
+	cfg := baseConfig()
+	state := orchestrator.NewState(cfg)
+	issue := makeIssue("id1", "ENG-1", "In Progress", nil, nil)
+	assert.True(t, orchestrator.IsEligible(issue, state, cfg))
+}
+
 func TestIsEligibleNonActiveState(t *testing.T) {
 	cfg := baseConfig()
 	state := orchestrator.NewState(cfg)

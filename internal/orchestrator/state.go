@@ -127,6 +127,19 @@ type InputRequiredEntry struct {
 	QuestionAuthorID   string // exact tracker author ID for the agent question
 	QuestionAuthorName string // display author for the agent question
 	QueuedAt           time.Time
+	// Kind, AutomationID, TriggerType mirror the same fields on RunEntry —
+	// carried over from the RunEntry that hit TerminalInputRequired so a
+	// resumed run's RunEntry (see processPendingInputResumes) can be
+	// re-tagged Kind=="automation". Without this, reconcileTrackerStates
+	// treats the resumed worker as an ordinary worker and kills it the next
+	// poll tick if the issue's current state isn't in ActiveStates — which
+	// is exactly the case for automations that trigger on non-active states
+	// (e.g. visual-tester on issue_entered_state 06-R4 QA). Empty for
+	// non-automation runs and for tracker-rehydrated entries (see
+	// inputRequiredEntryFromTracker) where the originating RunEntry is gone.
+	Kind         string
+	AutomationID string
+	TriggerType  string
 }
 
 // PendingInputResumeEntry holds a user reply that has been accepted but not
@@ -148,6 +161,10 @@ type PendingInputResumeEntry struct {
 	QuestionAuthorID   string
 	QuestionAuthorName string
 	QueuedAt           time.Time
+	// Kind, AutomationID, TriggerType — see InputRequiredEntry doc.
+	Kind         string
+	AutomationID string
+	TriggerType  string
 }
 
 // RunEntry tracks a live agent worker goroutine.
@@ -172,6 +189,12 @@ type RunEntry struct {
 	// TriggerType is the automation trigger ("cron", "input_required",
 	// "run_failed", "test"). Empty for manual runs.
 	TriggerType string
+	// Automation is the full dispatch context for automation-kind runs (nil for
+	// "worker"/"reviewer" runs). Carried into RetryEntry on failure so a retry
+	// can replay via startAutomationRun instead of the generic active-state
+	// dispatch path, which would use the wrong profile/instructions and
+	// silently drop the retry for issues sitting outside ActiveStates.
+	Automation *AutomationDispatch
 	// CommentCount counts comment-action invocations recorded for this
 	// run; surfaced on the issue card (T-6).
 	CommentCount int
@@ -233,6 +256,14 @@ type RetryEntry struct {
 	Attempt    int
 	DueAt      time.Time
 	Error      *string
+	// Automation carries the full dispatch context when the failed run was
+	// automation-kind (nil for ordinary worker/reviewer retries). When set,
+	// fireRetries skips the ActiveStates gate (mirroring
+	// IneligibleReasonForAutomation's dispatch-time behaviour, since an
+	// automation triggered by issue_entered_state may legitimately target a
+	// non-active state) and replays the retry via startAutomationRun instead
+	// of the generic active-state dispatch path.
+	Automation *AutomationDispatch
 }
 
 // PausedSessionInfo captures the runtime context of a paused worker so that

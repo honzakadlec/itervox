@@ -792,8 +792,18 @@ func (o *Orchestrator) startAutomationRun(
 	state.Claimed[issue.ID] = struct{}{}
 	attempt := 0
 	kind := "automation"
+	// UseIssueLifecycle runs go through the normal active-state reconciliation
+	// path by design (see AutomationDispatch.UseIssueLifecycle doc), so their
+	// retries must stay gated by ActiveStates like ordinary worker retries —
+	// only "true" automation-kind runs (which may target non-active trigger
+	// states) get RunEntry.Automation set, letting a failed retry bypass the
+	// gate and replay via startAutomationRun.
+	var automationForRetry *AutomationDispatch
 	if automation.UseIssueLifecycle {
 		kind = "worker"
+	} else {
+		automationCopy := automation
+		automationForRetry = &automationCopy
 	}
 	state.Running[issue.ID] = &RunEntry{
 		Issue:        issue,
@@ -803,6 +813,7 @@ func (o *Orchestrator) startAutomationRun(
 		Kind:         kind,
 		AutomationID: automation.AutomationID,
 		TriggerType:  automation.Trigger.Type,
+		Automation:   automationForRetry,
 		StartedAt:    now,
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,

@@ -94,6 +94,22 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 	// --- Workspace ---
 	automationRun := automation != nil && !automation.UseIssueLifecycle
+	// inputRequiredKind/AutomationID/TriggerType mirror the RunEntry fields
+	// set by automation.go's startAutomationRun. Carried into
+	// InputRequiredEntry (see queueInputRequiredEntry and the inline
+	// TerminalInputRequired case below) so a later resume can retag its
+	// RunEntry Kind=="automation" and skip reconcileTrackerStates' ActiveStates
+	// gate — see InputRequiredEntry.Kind doc in state.go.
+	inputRequiredKind := ""
+	if automationRun {
+		inputRequiredKind = "automation"
+	}
+	inputRequiredAutomationID := ""
+	inputRequiredTriggerType := ""
+	if automation != nil {
+		inputRequiredAutomationID = automation.AutomationID
+		inputRequiredTriggerType = automation.Trigger.Type
+	}
 	hasResumeSession := resume != nil && resume.SessionID != ""
 	hasResumeMessage := resume != nil && resume.UserMessage != ""
 	inputRequiredResume := hasResumeSession && hasResumeMessage
@@ -631,16 +647,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				cumulativeOutput,
 				result,
 			), &InputRequiredEntry{
-				IssueID:     issue.ID,
-				Identifier:  issue.Identifier,
-				SessionID:   sid,
-				Context:     inputContext,
-				BranchName:  activeBranchName,
-				Backend:     backend,
-				Command:     agentCommand,
-				WorkerHost:  workerHost,
-				ProfileName: profileName,
-				QueuedAt:    time.Now(),
+				IssueID:      issue.ID,
+				Identifier:   issue.Identifier,
+				SessionID:    sid,
+				Context:      inputContext,
+				BranchName:   activeBranchName,
+				Backend:      backend,
+				Command:      agentCommand,
+				WorkerHost:   workerHost,
+				ProfileName:  profileName,
+				QueuedAt:     time.Now(),
+				Kind:         inputRequiredKind,
+				AutomationID: inputRequiredAutomationID,
+				TriggerType:  inputRequiredTriggerType,
 			})
 			return
 		}
@@ -662,6 +681,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			cumulativeInput,
 			cumulativeCached,
 			cumulativeOutput,
+			inputRequiredKind,
+			inputRequiredAutomationID,
+			inputRequiredTriggerType,
 		) {
 			return
 		}
@@ -1031,6 +1053,7 @@ func (o *Orchestrator) queueSuccessfulTurnInputRequired(
 	claudeSessionID *string,
 	startedAt time.Time,
 	turn, cumulativeInput, cumulativeCached, cumulativeOutput int,
+	inputRequiredKind, inputRequiredAutomationID, inputRequiredTriggerType string,
 ) bool {
 	if ctx.Err() != nil {
 		return false
@@ -1068,6 +1091,9 @@ func (o *Orchestrator) queueSuccessfulTurnInputRequired(
 				cumulativeOutput,
 				result,
 			),
+			inputRequiredKind,
+			inputRequiredAutomationID,
+			inputRequiredTriggerType,
 		)
 		return true
 	}
@@ -1107,6 +1133,9 @@ func (o *Orchestrator) queueSuccessfulTurnInputRequired(
 			cumulativeOutput,
 			result,
 		),
+		inputRequiredKind,
+		inputRequiredAutomationID,
+		inputRequiredTriggerType,
 	)
 	return true
 }
@@ -1145,6 +1174,7 @@ func (o *Orchestrator) queueInputRequiredEntry(
 	claudeSessionID *string,
 	backend, agentCommand, workerHost, profileName, branchName, inputContext, reason string,
 	runEntry *RunEntry,
+	kind, automationID, triggerType string,
 ) {
 	if reason == "" {
 		slog.Info("worker: agent requires input — queuing for user input",
@@ -1163,16 +1193,19 @@ func (o *Orchestrator) queueInputRequiredEntry(
 		sid = *claudeSessionID
 	}
 	o.sendExitWithInputRequired(ctx, runEntry, &InputRequiredEntry{
-		IssueID:     issue.ID,
-		Identifier:  issue.Identifier,
-		SessionID:   sid,
-		Context:     inputContext,
-		BranchName:  branchName,
-		Backend:     backend,
-		Command:     agentCommand,
-		WorkerHost:  workerHost,
-		ProfileName: profileName,
-		QueuedAt:    time.Now(),
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		SessionID:    sid,
+		Context:      inputContext,
+		BranchName:   branchName,
+		Backend:      backend,
+		Command:      agentCommand,
+		WorkerHost:   workerHost,
+		ProfileName:  profileName,
+		QueuedAt:     time.Now(),
+		Kind:         kind,
+		AutomationID: automationID,
+		TriggerType:  triggerType,
 	})
 }
 

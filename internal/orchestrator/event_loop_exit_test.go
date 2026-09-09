@@ -53,7 +53,7 @@ func TestLateCanceledExitKeepsRetryClaim(t *testing.T) {
 	o := New(cfg, nil, nil, nil)
 	state := NewState(cfg)
 	// Reconcile already: deleted Running, re-claimed via ScheduleRetry.
-	state = ScheduleRetry(state, "id1", 1, "ENG-1", "stall timeout", time.Now(), 10)
+	state = ScheduleRetry(state, "id1", 1, "ENG-1", "stall timeout", time.Now(), 10, nil)
 	if _, ok := state.Claimed["id1"]; !ok {
 		t.Fatal("precondition: ScheduleRetry must set Claimed")
 	}

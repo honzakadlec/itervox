@@ -338,11 +338,22 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 			slog.Warn("retry: tracker fetch failed, rescheduling",
 				"issue_id", issueID, "error", err)
 			state = ScheduleRetry(state, issueID, entry.Attempt+1, entry.Identifier,
-				"retry poll failed", now, BackoffMs(entry.Attempt+1, o.cfg.Agent.MaxRetryBackoffMs))
+				"retry poll failed", now, BackoffMs(entry.Attempt+1, o.cfg.Agent.MaxRetryBackoffMs), entry.Automation)
 			continue
 		}
 
-		if len(refreshed) == 0 || !isActiveState(refreshed[0].State, state) {
+		if len(refreshed) == 0 || isTerminalState(refreshed[0].State, state) {
+			slog.Info("retry: issue no longer active, releasing claim", "issue_id", issueID)
+			state = CancelRetry(state, issueID)
+			continue
+		}
+		// Automation-kind retries (entry.Automation != nil) deliberately skip the
+		// ActiveStates gate here, mirroring IneligibleReasonForAutomation's
+		// dispatch-time behaviour — an automation triggered by issue_entered_state
+		// may legitimately target a non-active state (e.g. "06-R4 QA"), so a
+		// failed automation worker must be able to retry there too instead of
+		// having its claim silently cancelled forever.
+		if entry.Automation == nil && !isActiveState(refreshed[0].State, state) {
 			slog.Info("retry: issue no longer active, releasing claim", "issue_id", issueID)
 			state = CancelRetry(state, issueID)
 			continue
@@ -352,12 +363,16 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 		if AvailableSlots(state) <= 0 {
 			slog.Debug("retry: no slots, rescheduling", "issue_id", issueID)
 			state = ScheduleRetry(state, issueID, entry.Attempt, entry.Identifier,
-				"no available orchestrator slots", now, 1000)
+				"no available orchestrator slots", now, 1000, entry.Automation)
 			continue
 		}
 
 		delete(state.RetryAttempts, issueID)
-		state = o.dispatch(ctx, state, refreshed[0], entry.Attempt)
+		if entry.Automation != nil {
+			o.startAutomationRun(ctx, &state, refreshed[0], now, *entry.Automation)
+		} else {
+			state = o.dispatch(ctx, state, refreshed[0], entry.Attempt)
+		}
 	}
 	return state
 }
@@ -392,6 +407,9 @@ func buildPendingInputResumeEntry(entry *InputRequiredEntry, userMessage string)
 		QuestionAuthorID:   entry.QuestionAuthorID,
 		QuestionAuthorName: entry.QuestionAuthorName,
 		QueuedAt:           time.Now(),
+		Kind:               entry.Kind,
+		AutomationID:       entry.AutomationID,
+		TriggerType:        entry.TriggerType,
 	}
 }
 
@@ -435,6 +453,9 @@ func inputRequiredEntryFromPending(entry *PendingInputResumeEntry) *InputRequire
 		QuestionAuthorID:   entry.QuestionAuthorID,
 		QuestionAuthorName: entry.QuestionAuthorName,
 		QueuedAt:           entry.QueuedAt,
+		Kind:               entry.Kind,
+		AutomationID:       entry.AutomationID,
+		TriggerType:        entry.TriggerType,
 	}
 }
 
@@ -641,7 +662,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 				"identifier", identifier, "state", detailed.State)
 			continue
 		}
-		if !isActiveState(detailed.State, state) {
+		if !isActiveState(detailed.State, state) && !o.isKnownPipelineState(detailed.State) {
 			delete(state.PendingInputResumes, identifier)
 			slog.Info("orchestrator: dropping pending input resume for non-active issue",
 				"identifier", identifier, "state", detailed.State)
@@ -664,6 +685,15 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			PendingInputResume: true,
 			BranchName:         branchNameValue(resumeIssue.BranchName),
 			StartedAt:          now,
+			// Kind/AutomationID/TriggerType restore the tag the original
+			// RunEntry carried before it hit TerminalInputRequired (see
+			// InputRequiredEntry.Kind doc in state.go). Without this,
+			// reconcileTrackerStates sees an untagged "worker" running on
+			// whatever non-active state the automation targets (e.g.
+			// visual-tester on 06-R4 QA) and kills it on the very next poll.
+			Kind:         entry.Kind,
+			AutomationID: entry.AutomationID,
+			TriggerType:  entry.TriggerType,
 		}
 		o.workerCancelsMu.Lock()
 		o.workerCancels[identifier] = workerCancel
@@ -1562,14 +1592,16 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					o.recordHistory(liveEntry, issue, now, "failed")
 				} else {
 					backoff := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
-					state = ScheduleRetry(state, ev.IssueID, nextAttempt, issue.Identifier, errMsg, now, backoff)
 					// liveEntry may be nil when a reconcile kill path already
 					// removed the entry and the worker's exit event arrived
 					// late (ORCH-1) — never dereference it unguarded.
 					turnCount, inTok, outTok := 0, 0, 0
+					var automationForRetry *AutomationDispatch
 					if liveEntry != nil {
 						turnCount, inTok, outTok = liveEntry.TurnCount, liveEntry.InputTokens, liveEntry.OutputTokens
+						automationForRetry = liveEntry.Automation
 					}
+					state = ScheduleRetry(state, ev.IssueID, nextAttempt, issue.Identifier, errMsg, now, backoff, automationForRetry)
 					slog.Info("orchestrator: worker failed, retry scheduled",
 						"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
 						"attempt", nextAttempt, "backoff_ms", backoff,
