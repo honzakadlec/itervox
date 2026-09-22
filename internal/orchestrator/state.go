@@ -140,6 +140,19 @@ type InputRequiredEntry struct {
 	Kind         string
 	AutomationID string
 	TriggerType  string
+	// Automation and RequiresMoveState mirror the same-named RunEntry fields.
+	// They exist for the same reason Kind/AutomationID/TriggerType do:
+	// processPendingInputResumes rebuilds a RunEntry for the resumed run, and
+	// runWorker must receive the real *AutomationDispatch (not nil) so its
+	// local automationRun stays true across a resume. Without this, a
+	// resumed automation session is silently treated as an ordinary worker:
+	// worker.go's `!automationRun`-gated completion-state transition fires
+	// and stomps whatever state the automation was trying to reach (e.g.
+	// deploy-checker moving an issue to "06-R4 QA" gets reverted straight
+	// back to the plain completion_state). Nil/false for non-automation runs
+	// and for tracker-rehydrated entries.
+	Automation        *AutomationDispatch
+	RequiresMoveState bool
 }
 
 // PendingInputResumeEntry holds a user reply that has been accepted but not
@@ -161,10 +174,13 @@ type PendingInputResumeEntry struct {
 	QuestionAuthorID   string
 	QuestionAuthorName string
 	QueuedAt           time.Time
-	// Kind, AutomationID, TriggerType — see InputRequiredEntry doc.
-	Kind         string
-	AutomationID string
-	TriggerType  string
+	// Kind, AutomationID, TriggerType, Automation, RequiresMoveState — see
+	// InputRequiredEntry doc.
+	Kind              string
+	AutomationID      string
+	TriggerType       string
+	Automation        *AutomationDispatch
+	RequiresMoveState bool
 }
 
 // RunEntry tracks a live agent worker goroutine.
@@ -195,6 +211,16 @@ type RunEntry struct {
 	// dispatch path, which would use the wrong profile/instructions and
 	// silently drop the retry for issues sitting outside ActiveStates.
 	Automation *AutomationDispatch
+	// RequiresMoveState is true when this automation-kind run's resolved
+	// profile was granted the move_state action for this dispatch. Set once
+	// at dispatch (startAutomationRun) from the same profile/automation
+	// resolution used to build the agent's action grant. If the run reports
+	// TerminalSucceeded but the agent never actually called move_state
+	// (tracked via Orchestrator.MoveStateCountFor), the event loop treats the
+	// exit as a failure so it retries instead of silently dropping the issue
+	// mid-pipeline (e.g. deploy-checker polling a deploy and quitting before
+	// reaching a terminal status).
+	RequiresMoveState bool
 	// CommentCount counts comment-action invocations recorded for this
 	// run; surfaced on the issue card (T-6).
 	CommentCount int

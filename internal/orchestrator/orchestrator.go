@@ -143,6 +143,16 @@ type Orchestrator struct {
 	commentCountsMu sync.RWMutex
 	commentCounts   map[string]int // identifier → live comment count
 
+	// moveStateCountsMu guards moveStateCounts, which is written by
+	// BumpMoveStateCount (any goroutine, called from the HTTP handler that
+	// serves /api/v1/agent-actions/{identifier}/move-state) and read by
+	// MoveStateCountFor when the event loop verifies that an automation
+	// profile granted move_state actually called it before treating a
+	// TerminalSucceeded exit as real success. Reset to zero by
+	// ResetMoveStateCount when the run terminates.
+	moveStateCountsMu sync.RWMutex
+	moveStateCounts   map[string]int // identifier → live move_state call count
+
 	// automationsMu guards inputRequiredAutomations and runFailedAutomations so
 	// the automations goroutine can hot-reload them via SetInputRequiredAutomations
 	// / SetRunFailedAutomations concurrently with event-loop reads.
@@ -263,6 +273,7 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		reviewerInjectedProfiles: make(map[string]struct{}),
 		issueBackends:            make(map[string]string),
 		commentCounts:            make(map[string]int),
+		moveStateCounts:          make(map[string]int),
 		sshHostDescs:             sshHostDescs,
 		daemonInstanceID:         newDaemonInstanceID(),
 	}
@@ -305,6 +316,37 @@ func (o *Orchestrator) ResetCommentCount(identifier string) {
 	o.commentCountsMu.Lock()
 	delete(o.commentCounts, identifier)
 	o.commentCountsMu.Unlock()
+}
+
+// BumpMoveStateCount increments the per-identifier move_state call counter.
+// Called from the HTTP handler goroutine after a successful
+// /api/v1/agent-actions/{identifier}/move-state request, never from the
+// orchestrator event loop. The event loop reads it via MoveStateCountFor to
+// tell a real move_state call apart from an automation run that had the
+// permission but never used it.
+func (o *Orchestrator) BumpMoveStateCount(identifier string) {
+	o.moveStateCountsMu.Lock()
+	if o.moveStateCounts == nil {
+		o.moveStateCounts = make(map[string]int)
+	}
+	o.moveStateCounts[identifier]++
+	o.moveStateCountsMu.Unlock()
+}
+
+// MoveStateCountFor returns the current move_state call count for the
+// identifier (zero if none recorded for the in-flight run).
+func (o *Orchestrator) MoveStateCountFor(identifier string) int {
+	o.moveStateCountsMu.RLock()
+	defer o.moveStateCountsMu.RUnlock()
+	return o.moveStateCounts[identifier]
+}
+
+// ResetMoveStateCount clears the counter for the identifier. Called when a
+// run terminates so the next run starts from zero.
+func (o *Orchestrator) ResetMoveStateCount(identifier string) {
+	o.moveStateCountsMu.Lock()
+	delete(o.moveStateCounts, identifier)
+	o.moveStateCountsMu.Unlock()
 }
 
 // SetAgentLogDir configures the directory where agent session logs are written

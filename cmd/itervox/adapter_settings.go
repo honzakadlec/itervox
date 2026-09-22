@@ -58,6 +58,15 @@ func (a *orchestratorAdapter) BumpCommentCount(identifier string) {
 	a.orch.BumpCommentCount(identifier)
 }
 
+// BumpMoveStateCount delegates to the orchestrator's per-identifier
+// move_state call counter. HTTP handlers call this after a successful
+// agent move_state action so the event loop can tell a real state move
+// apart from an automation profile that had the permission but never used
+// it (see RunEntry.RequiresMoveState).
+func (a *orchestratorAdapter) BumpMoveStateCount(identifier string) {
+	a.orch.BumpMoveStateCount(identifier)
+}
+
 // TestAutomation delegates to the orchestrator's one-off test dispatcher
 // (T-10). The HTTP handler invokes it on POST /api/v1/automations/{id}/test
 // to fire a single run tagged TriggerType="test" without waiting for the

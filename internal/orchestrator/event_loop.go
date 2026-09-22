@@ -410,6 +410,8 @@ func buildPendingInputResumeEntry(entry *InputRequiredEntry, userMessage string)
 		Kind:               entry.Kind,
 		AutomationID:       entry.AutomationID,
 		TriggerType:        entry.TriggerType,
+		Automation:         entry.Automation,
+		RequiresMoveState:  entry.RequiresMoveState,
 	}
 }
 
@@ -456,6 +458,8 @@ func inputRequiredEntryFromPending(entry *PendingInputResumeEntry) *InputRequire
 		Kind:               entry.Kind,
 		AutomationID:       entry.AutomationID,
 		TriggerType:        entry.TriggerType,
+		Automation:         entry.Automation,
+		RequiresMoveState:  entry.RequiresMoveState,
 	}
 }
 
@@ -694,16 +698,32 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			Kind:         entry.Kind,
 			AutomationID: entry.AutomationID,
 			TriggerType:  entry.TriggerType,
+			// Automation/RequiresMoveState mirror the same doc — restore the
+			// full dispatch context (needed if this resumed run later fails
+			// and must retry via startAutomationRun) and the move_state-
+			// permission tracking so the TerminalSucceeded guard (see
+			// event_loop.go) still applies after a resume.
+			Automation:        entry.Automation,
+			RequiresMoveState: entry.RequiresMoveState,
 		}
 		o.workerCancelsMu.Lock()
 		o.workerCancels[identifier] = workerCancel
 		o.workerCancelsMu.Unlock()
 		runnerCommand := resolveResumeCommand(inputRequiredEntryFromPending(entry), o.cfg, &o.cfgMu)
+		// entry.Automation (not nil) must be passed through here: runWorker
+		// derives its own local automationRun from this parameter alone. A
+		// resumed automation run that gets automation=nil is silently treated
+		// as an ordinary worker — its `!automationRun`-gated completion-state
+		// transition then fires and stomps whatever state the automation was
+		// trying to reach (the DBIMPROVE-598 deploy-checker incident: resumed
+		// after an input-required question, it moved the issue to "06-R4 QA"
+		// itself, then runWorker's ordinary-worker completion path immediately
+		// reverted it to completion_state "04-With Developer").
 		go o.runWorker(workerCtx, resumeIssue, 0, entry.WorkerHost, runnerCommand, entry.Backend, entry.ProfileName, false, &ResumeContext{
 			SessionID:    entry.SessionID,
 			UserMessage:  entry.UserMessage,
 			InputContext: entry.Context,
-		}, nil)
+		}, entry.Automation)
 	}
 	return state
 }
@@ -1288,6 +1308,26 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			return state
 		}
 
+		// Guard against a silent-success automation run: a profile granted
+		// move_state (RequiresMoveState, set at dispatch in startAutomationRun)
+		// is expected to call it before finishing. If the worker still reports
+		// TerminalSucceeded but no move_state call was recorded for this
+		// identifier (BumpMoveStateCount from the HTTP action handler), the
+		// agent quit mid-task — e.g. it started polling an external system,
+		// declared it would "notify later", and ended its turn without ever
+		// reading back a result. Rewriting the exit to TerminalFailed here
+		// routes it through the existing retry/backoff/max-retries-exhausted
+		// path below instead of releasing the claim as if the work were done.
+		if ev.RunEntry.TerminalReason == TerminalSucceeded &&
+			liveEntry != nil && liveEntry.Kind == "automation" && liveEntry.RequiresMoveState &&
+			o.MoveStateCountFor(issue.Identifier) == 0 {
+			slog.Warn("orchestrator: automation had move_state permission but exited without calling it, treating as failure for retry",
+				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
+				"profile", liveEntry.ProfileName, "automation", liveEntry.AutomationID)
+			ev.RunEntry.TerminalReason = TerminalFailed
+			ev.Error = fmt.Errorf("automation profile %q had move_state permission but completed without calling it", liveEntry.ProfileName)
+		}
+
 		switch ev.RunEntry.TerminalReason {
 		case TerminalCanceledByReconciliation:
 			// Reconcile already released the claim; just log.
@@ -1783,6 +1823,8 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 	// Reset the per-identifier counter so the next run starts fresh — without
 	// this a long-lived issue accumulates comment counts across multiple runs.
 	o.ResetCommentCount(issue.Identifier)
+	// Same reasoning for the move_state call counter (see RunEntry.RequiresMoveState).
+	o.ResetMoveStateCount(issue.Identifier)
 }
 
 func runEligibleForAutoReview(liveEntry *RunEntry) bool {

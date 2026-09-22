@@ -309,6 +309,18 @@ type inputRequiredDisk struct {
 	Kind               string `json:"kind,omitempty"`
 	AutomationID       string `json:"automation_id,omitempty"`
 	TriggerType        string `json:"trigger_type,omitempty"`
+	// Automation and RequiresMoveState persist the fields documented on
+	// InputRequiredEntry in state.go. Without these, a daemon restart between
+	// "agent hit input-required" and "human replies" drops the full
+	// AutomationDispatch on load — resume then dispatches with
+	// automation=nil (see processPendingInputResumes) even though Kind still
+	// says "automation", and worker.go's `!automationRun`-gated
+	// completion-state transition stomps the automation's own target state.
+	// AutomationDispatch's fields are all plain JSON-serializable scalars/
+	// time.Time (no funcs/pointers/regexes), so it round-trips with the
+	// default encoding — no custom (Un)MarshalJSON needed.
+	Automation        *AutomationDispatch `json:"automation,omitempty"`
+	RequiresMoveState bool                `json:"requires_move_state,omitempty"`
 }
 
 type pendingInputResumeDisk struct {
@@ -329,6 +341,9 @@ type pendingInputResumeDisk struct {
 	Kind               string `json:"kind,omitempty"`
 	AutomationID       string `json:"automation_id,omitempty"`
 	TriggerType        string `json:"trigger_type,omitempty"`
+	// Automation, RequiresMoveState — see inputRequiredDisk doc above.
+	Automation        *AutomationDispatch `json:"automation,omitempty"`
+	RequiresMoveState bool                `json:"requires_move_state,omitempty"`
 }
 
 type inputRequiredStateDisk struct {
@@ -379,6 +394,8 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			Kind:               v.Kind,
 			AutomationID:       v.AutomationID,
 			TriggerType:        v.TriggerType,
+			Automation:         v.Automation,
+			RequiresMoveState:  v.RequiresMoveState,
 		}
 	}
 	pendingDisk := make(map[string]pendingInputResumeDisk, len(pending))
@@ -401,6 +418,8 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			Kind:               v.Kind,
 			AutomationID:       v.AutomationID,
 			TriggerType:        v.TriggerType,
+			Automation:         v.Automation,
+			RequiresMoveState:  v.RequiresMoveState,
 		}
 	}
 	data, err := json.Marshal(inputRequiredStateDisk{
@@ -474,6 +493,8 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			Kind:               v.Kind,
 			AutomationID:       v.AutomationID,
 			TriggerType:        v.TriggerType,
+			Automation:         v.Automation,
+			RequiresMoveState:  v.RequiresMoveState,
 		}
 	}
 	for k, v := range pending {
@@ -496,6 +517,8 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			Kind:               v.Kind,
 			AutomationID:       v.AutomationID,
 			TriggerType:        v.TriggerType,
+			Automation:         v.Automation,
+			RequiresMoveState:  v.RequiresMoveState,
 		}
 	}
 	// gaps_11 G-2 — mirror loadPausedFromDisk: treat persistence-restored

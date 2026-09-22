@@ -136,6 +136,56 @@ func TestCreateIssuePostsFieldsAndFetchesDetail(t *testing.T) {
 	assert.Equal(t, "PROJ-20", issue.Identifier)
 }
 
+func TestCreateIssueMultiProjectUsesSourceIssueProject(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request) {
+		reqBody := decodeBody(t, r)
+		fields, _ := reqBody["fields"].(map[string]any)
+		project, _ := fields["project"].(map[string]any)
+		assert.Equal(t, "OTHER", project["key"])
+		writeJSON(w, 201, map[string]any{"id": "20001", "key": "OTHER-5"})
+	})
+	mux.HandleFunc("/rest/api/3/issue/OTHER-5", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, jiraIssueFixture("20001", "OTHER-5", "New title", "To Do"))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cfg := defaultConfig(ts.URL)
+	cfg.ProjectSlug = "PROJ,OTHER"
+	client := jiraclient.NewClient(cfg)
+	issue, err := client.CreateIssue(context.Background(), "OTHER-99", "New title", "body text", "")
+	require.NoError(t, err)
+	require.NotNil(t, issue)
+	assert.Equal(t, "OTHER-5", issue.Identifier)
+}
+
+func TestCreateIssueMultiProjectFallsBackToFirstConfigured(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request) {
+		reqBody := decodeBody(t, r)
+		fields, _ := reqBody["fields"].(map[string]any)
+		project, _ := fields["project"].(map[string]any)
+		assert.Equal(t, "PROJ", project["key"])
+		writeJSON(w, 201, map[string]any{"id": "20002", "key": "PROJ-99"})
+	})
+	mux.HandleFunc("/rest/api/3/issue/PROJ-99", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, jiraIssueFixture("20002", "PROJ-99", "New title", "To Do"))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cfg := defaultConfig(ts.URL)
+	cfg.ProjectSlug = "PROJ,OTHER"
+	client := jiraclient.NewClient(cfg)
+	// UNKNOWN-1 isn't in either configured project, so it falls back to the
+	// first configured slug (PROJ).
+	issue, err := client.CreateIssue(context.Background(), "UNKNOWN-1", "New title", "body text", "")
+	require.NoError(t, err)
+	require.NotNil(t, issue)
+	assert.Equal(t, "PROJ-99", issue.Identifier)
+}
+
 func TestCreateIssueWithStateNameTransitions(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request) {

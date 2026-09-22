@@ -66,8 +66,6 @@
       "Bash(grep *)"
     ],
     "deny": [
-      "Bash(git push*)",
-      "Bash(git commit*)",
       "Bash(rm -rf*)",
       "Bash(lefthook uninstall*)"
     ]

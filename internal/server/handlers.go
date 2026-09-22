@@ -870,6 +870,10 @@ func (s *Server) handleAgentMoveState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
 		return
 	}
+	// Record that this run actually called move_state, so the event loop can
+	// tell a real state move apart from an automation profile that had the
+	// permission but exited without using it (see RunEntry.RequiresMoveState).
+	s.client.BumpMoveStateCount(identifier)
 	select {
 	case s.refreshChan <- struct{}{}:
 	default:

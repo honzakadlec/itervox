@@ -2,6 +2,7 @@ package jira_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,17 +18,25 @@ func searchResponse(issues ...map[string]any) map[string]any {
 		rawIssues[i] = is
 	}
 	return map[string]any{
-		"issues":     rawIssues,
-		"total":      float64(len(issues)),
-		"startAt":    float64(0),
-		"maxResults": float64(50),
+		"issues": rawIssues,
+		"isLast": true,
 	}
+}
+
+// decodeSearchJQLBody reads the JQL search request body (POST /search/jql).
+func decodeSearchJQLBody(t *testing.T, r *http.Request) map[string]any {
+	t.Helper()
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+	return body
 }
 
 func TestFetchCandidateIssuesUsesProjectAndActiveStates(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/api/3/search", func(w http.ResponseWriter, r *http.Request) {
-		jql := r.URL.Query().Get("jql")
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		body := decodeSearchJQLBody(t, r)
+		jql, _ := body["jql"].(string)
 		assert.Contains(t, jql, `project = "PROJ"`)
 		assert.Contains(t, jql, `status in ("In Progress")`)
 		writeJSON(w, 200, searchResponse(jiraIssueFixture("1", "PROJ-1", "A", "In Progress")))
@@ -40,6 +49,25 @@ func TestFetchCandidateIssuesUsesProjectAndActiveStates(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, issues, 1)
 	assert.Equal(t, "PROJ-1", issues[0].Identifier)
+}
+
+func TestFetchCandidateIssuesMultiProjectSlug(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		body := decodeSearchJQLBody(t, r)
+		jql, _ := body["jql"].(string)
+		assert.Contains(t, jql, `project in ("PROJ","OTHER")`)
+		writeJSON(w, 200, searchResponse(jiraIssueFixture("1", "PROJ-1", "A", "In Progress")))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cfg := defaultConfig(ts.URL)
+	cfg.ProjectSlug = "PROJ, OTHER"
+	client := jiraclient.NewClient(cfg)
+	issues, err := client.FetchCandidateIssues(context.Background())
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
 }
 
 func TestFetchCandidateIssuesNoActiveStatesSkipsCall(t *testing.T) {
@@ -60,8 +88,9 @@ func TestFetchIssuesByStatesEmptyReturnsEmptyNoCall(t *testing.T) {
 
 func TestFetchIssuesByStatesBuildsJQL(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/api/3/search", func(w http.ResponseWriter, r *http.Request) {
-		jql := r.URL.Query().Get("jql")
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		body := decodeSearchJQLBody(t, r)
+		jql, _ := body["jql"].(string)
 		assert.Contains(t, jql, `status in ("Done","Cancelled")`)
 		writeJSON(w, 200, searchResponse(jiraIssueFixture("2", "PROJ-2", "B", "Done")))
 	})
@@ -83,8 +112,9 @@ func TestFetchIssueStatesByIDsEmptyReturnsEmptyNoCall(t *testing.T) {
 
 func TestFetchIssueStatesByIDsBuildsJQL(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/api/3/search", func(w http.ResponseWriter, r *http.Request) {
-		jql := r.URL.Query().Get("jql")
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		body := decodeSearchJQLBody(t, r)
+		jql, _ := body["jql"].(string)
 		assert.Contains(t, jql, `id in ("10001","10002")`)
 		writeJSON(w, 200, searchResponse(
 			jiraIssueFixture("10001", "PROJ-1", "A", "Done"),
@@ -103,24 +133,22 @@ func TestFetchIssueStatesByIDsBuildsJQL(t *testing.T) {
 func TestSearchPaginatesUntilTotalReached(t *testing.T) {
 	calls := 0
 	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/api/3/search", func(w http.ResponseWriter, r *http.Request) {
-		startAt := r.URL.Query().Get("startAt")
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		body := decodeSearchJQLBody(t, r)
+		token, _ := body["nextPageToken"].(string)
 		calls++
-		if startAt == "0" {
-			w.Header().Set("Content-Type", "application/json")
+		if token == "" {
 			writeJSON(w, 200, map[string]any{
-				"issues":     []any{jiraIssueFixture("1", "PROJ-1", "A", "In Progress")},
-				"total":      float64(2),
-				"startAt":    float64(0),
-				"maxResults": float64(1),
+				"issues":        []any{jiraIssueFixture("1", "PROJ-1", "A", "In Progress")},
+				"isLast":        false,
+				"nextPageToken": "page-2",
 			})
 			return
 		}
+		assert.Equal(t, "page-2", token)
 		writeJSON(w, 200, map[string]any{
-			"issues":     []any{jiraIssueFixture("2", "PROJ-2", "B", "In Progress")},
-			"total":      float64(2),
-			"startAt":    float64(1),
-			"maxResults": float64(1),
+			"issues": []any{jiraIssueFixture("2", "PROJ-2", "B", "In Progress")},
+			"isLast": true,
 		})
 	})
 	ts := httptest.NewServer(mux)

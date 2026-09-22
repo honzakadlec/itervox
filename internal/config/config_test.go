@@ -198,6 +198,30 @@ func TestTrackerUsernameAndDefaultIssueTypeDefaults(t *testing.T) {
 	assert.Equal(t, "Task", cfg.Tracker.DefaultIssueType)
 }
 
+func TestTrackerUsernameExpandsEnvVar(t *testing.T) {
+	t.Setenv("ITERVOX_TEST_JIRA_USERNAME", "bot@example.com")
+	content := "---\ntracker:\n  kind: jira\n  api_key: test-token\n  project_slug: PROJ\n  username: $ITERVOX_TEST_JIRA_USERNAME\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "bot@example.com", cfg.Tracker.Username)
+}
+
+func TestTrackerRequiredLabelExplicit(t *testing.T) {
+	content := "---\ntracker:\n  kind: jira\n  api_key: test-token\n  project_slug: PROJ\n  required_label: ready_for_agent\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "ready_for_agent", cfg.Tracker.RequiredLabel)
+}
+
+func TestTrackerRequiredLabelDefaultsEmpty(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.Tracker.RequiredLabel)
+}
+
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {
 	content := minimal("agent:\n  max_concurrent_agents_by_state:\n    Todo: 3\n    IN PROGRESS: 2\n")
 	path := workflowWithContent(t, content)

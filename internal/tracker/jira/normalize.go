@@ -102,6 +102,18 @@ func statusName(fields map[string]any) string {
 	return name
 }
 
+// extractLabels returns the issue's labels as reported by Jira.
+func extractLabels(fields map[string]any) []string {
+	raw, _ := fields["labels"].([]any)
+	labels := make([]string, 0, len(raw))
+	for _, l := range raw {
+		if s, ok := l.(string); ok {
+			labels = append(labels, s)
+		}
+	}
+	return labels
+}
+
 // extractComments returns the issue's comments in ascending CreatedAt order,
 // matching Jira's default comment ordering and the domain.Issue.Comments contract.
 func extractComments(fields map[string]any) []domain.Comment {
@@ -184,8 +196,9 @@ func scanBranchMarker(comments []domain.Comment) string {
 }
 
 // normalizeIssue converts a raw Jira REST API v3 issue resource to a domain.Issue.
-// Returns nil if required fields (id, key) are missing.
-func normalizeIssue(raw map[string]any) *domain.Issue {
+// siteBaseURL is the Jira Cloud site root (e.g. "https://yourdomain.atlassian.net"),
+// used to build the issue's browse URL. Returns nil if required fields (id, key) are missing.
+func normalizeIssue(raw map[string]any, siteBaseURL string) *domain.Issue {
 	id, _ := raw["id"].(string)
 	key, _ := raw["key"].(string)
 	if id == "" || key == "" {
@@ -198,12 +211,15 @@ func normalizeIssue(raw map[string]any) *domain.Issue {
 	summary, _ := fields["summary"].(string)
 
 	comments := extractComments(fields)
+	issueURL := strings.TrimSuffix(siteBaseURL, "/") + "/browse/" + key
 	issue := &domain.Issue{
 		ID:         id,
 		Identifier: key,
 		Title:      summary,
 		State:      statusName(fields),
+		URL:        &issueURL,
 		BlockedBy:  extractBlockers(fields),
+		Labels:     extractLabels(fields),
 		Comments:   comments,
 		CreatedAt:  parseJiraTime(fields["created"]),
 		UpdatedAt:  parseJiraTime(fields["updated"]),

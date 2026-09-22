@@ -799,24 +799,28 @@ func (o *Orchestrator) startAutomationRun(
 	// states) get RunEntry.Automation set, letting a failed retry bypass the
 	// gate and replay via startAutomationRun.
 	var automationForRetry *AutomationDispatch
+	moveStateGranted := false
 	if automation.UseIssueLifecycle {
 		kind = "worker"
 	} else {
 		automationCopy := automation
 		automationForRetry = &automationCopy
+		grantedActions := filterAllowedActionsForAutomation(profile.AllowedActions, &automation)
+		moveStateGranted = slices.Contains(grantedActions, config.AgentActionMoveState)
 	}
 	state.Running[issue.ID] = &RunEntry{
-		Issue:        issue,
-		WorkerHost:   workerHost,
-		Backend:      backend,
-		ProfileName:  automation.ProfileName,
-		Kind:         kind,
-		AutomationID: automation.AutomationID,
-		TriggerType:  automation.Trigger.Type,
-		Automation:   automationForRetry,
-		StartedAt:    now,
-		RetryAttempt: &attempt,
-		WorkerCancel: workerCancel,
+		Issue:             issue,
+		WorkerHost:        workerHost,
+		Backend:           backend,
+		ProfileName:       automation.ProfileName,
+		Kind:              kind,
+		AutomationID:      automation.AutomationID,
+		TriggerType:       automation.Trigger.Type,
+		Automation:        automationForRetry,
+		RequiresMoveState: moveStateGranted,
+		StartedAt:         now,
+		RetryAttempt:      &attempt,
+		WorkerCancel:      workerCancel,
 	}
 
 	o.workerCancelsMu.Lock()

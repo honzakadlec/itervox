@@ -55,6 +55,10 @@ type TrackerConfig struct {
 	// creating follow-up issues on trackers that require one (Jira). Ignored
 	// by trackers that don't have an issue-type concept.
 	DefaultIssueType string
+	// RequiredLabel, when non-empty, is a label that must be present on an
+	// issue (case-insensitive) for it to be dispatch-eligible, in addition to
+	// being in an active state. Empty string = no label gate.
+	RequiredLabel string
 }
 
 // PollingConfig holds polling settings.
@@ -412,8 +416,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	}
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
-	cfg.Tracker.Username = strField(tracker, "username", "")
+	cfg.Tracker.Username = resolveSecret(strField(tracker, "username", ""))
 	cfg.Tracker.DefaultIssueType = strField(tracker, "default_issue_type", "Task")
+	cfg.Tracker.RequiredLabel = strField(tracker, "required_label", "")
 
 	// Polling
 	polling := nestedMap(raw, "polling")

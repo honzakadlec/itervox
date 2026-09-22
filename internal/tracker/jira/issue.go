@@ -32,14 +32,37 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 	}, nil
 }
 
-// CreateIssue creates a follow-up Jira issue in the configured project.
-// sourceIssueID is accepted for tracker interface parity but not otherwise used.
-// When stateName is non-empty, the new issue is transitioned to that workflow
-// status after creation (new Jira issues start in the project's default status).
-func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
+// createIssueProjectKey picks the Jira project to create a follow-up issue
+// in. When multiple projects are configured (comma-separated ProjectSlug),
+// it prefers the source issue's own project — parsed from its "KEY-123"
+// identifier — so follow-ups land alongside their origin; falls back to the
+// first configured project when the source project isn't recognized or only
+// one project is configured.
+func (c *Client) createIssueProjectKey(sourceIssueID string) string {
+	slugs := c.projectSlugs()
+	if len(slugs) == 0 {
+		return c.cfg.ProjectSlug
+	}
+	if idx := strings.LastIndex(sourceIssueID, "-"); idx > 0 {
+		candidate := sourceIssueID[:idx]
+		for _, s := range slugs {
+			if strings.EqualFold(s, candidate) {
+				return candidate
+			}
+		}
+	}
+	return slugs[0]
+}
+
+// CreateIssue creates a follow-up Jira issue in the configured project (or,
+// when multiple projects are configured, the source issue's own project —
+// see createIssueProjectKey). When stateName is non-empty, the new issue is
+// transitioned to that workflow status after creation (new Jira issues
+// start in the project's default status).
+func (c *Client) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
 	reqBody := map[string]any{
 		"fields": map[string]any{
-			"project":     map[string]any{"key": c.cfg.ProjectSlug},
+			"project":     map[string]any{"key": c.createIssueProjectKey(sourceIssueID)},
 			"summary":     title,
 			"description": adfDoc(body),
 			"issuetype":   map[string]any{"name": c.cfg.DefaultIssueType},
@@ -95,7 +118,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 }
 
 // detailFields lists the Jira fields fetched for a full issue detail view.
-const detailFields = "summary,description,status,issuetype,created,updated,issuelinks,comment"
+const detailFields = "summary,description,status,issuetype,created,updated,issuelinks,comment,labels"
 
 // FetchIssueDetail returns a single Jira issue with full details including comments.
 // issueID may be either the numeric Jira id or the issue key — Jira's REST API
@@ -105,7 +128,7 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 	if err != nil {
 		return nil, fmt.Errorf("jira: fetch issue detail %s: %w", issueID, err)
 	}
-	issue := normalizeIssue(raw)
+	issue := normalizeIssue(raw, c.cfg.Endpoint)
 	if issue == nil {
 		return nil, &tracker.NotFoundError{Adapter: "jira", Identifier: issueID}
 	}

@@ -67,21 +67,52 @@ func TestNormalizeIssueBasicFields(t *testing.T) {
 			"updated": "2024-06-02T10:15:00.000+0000",
 		},
 	}
-	issue := normalizeIssue(raw)
+	issue := normalizeIssue(raw, "https://example.atlassian.net")
 	require.NotNil(t, issue)
 	assert.Equal(t, "10001", issue.ID)
 	assert.Equal(t, "PROJ-1", issue.Identifier)
 	assert.Equal(t, "Fix the bug", issue.Title)
 	assert.Equal(t, "In Progress", issue.State)
+	require.NotNil(t, issue.URL)
+	assert.Equal(t, "https://example.atlassian.net/browse/PROJ-1", *issue.URL)
 	require.NotNil(t, issue.Description)
 	assert.Equal(t, "Body text", *issue.Description)
 	require.NotNil(t, issue.CreatedAt)
 	require.NotNil(t, issue.UpdatedAt)
 }
 
+func TestNormalizeIssueExtractsLabels(t *testing.T) {
+	raw := map[string]any{
+		"id":  "10001",
+		"key": "PROJ-1",
+		"fields": map[string]any{
+			"summary": "Fix the bug",
+			"status":  map[string]any{"name": "In Progress"},
+			"labels":  []any{"ready_for_agent", "backend"},
+		},
+	}
+	issue := normalizeIssue(raw, "https://example.atlassian.net")
+	require.NotNil(t, issue)
+	assert.Equal(t, []string{"ready_for_agent", "backend"}, issue.Labels)
+}
+
+func TestNormalizeIssueNoLabelsFieldReturnsEmptySlice(t *testing.T) {
+	raw := map[string]any{
+		"id":  "10001",
+		"key": "PROJ-1",
+		"fields": map[string]any{
+			"summary": "Fix the bug",
+			"status":  map[string]any{"name": "In Progress"},
+		},
+	}
+	issue := normalizeIssue(raw, "https://example.atlassian.net")
+	require.NotNil(t, issue)
+	assert.Empty(t, issue.Labels)
+}
+
 func TestNormalizeIssueMissingKeyReturnsNil(t *testing.T) {
 	raw := map[string]any{"id": "10001", "fields": map[string]any{}}
-	assert.Nil(t, normalizeIssue(raw))
+	assert.Nil(t, normalizeIssue(raw, "https://example.atlassian.net"))
 }
 
 func TestExtractBlockersOnlyInwardBlockedBy(t *testing.T) {

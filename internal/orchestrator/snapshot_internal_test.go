@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,4 +67,77 @@ func TestSnapshotPreservesAutomationFieldsOnRunningEntries(t *testing.T) {
 	assert.Empty(t, manual.AutomationID)
 	assert.Empty(t, manual.TriggerType)
 	assert.Equal(t, 0, manual.CommentCount)
+}
+
+// TestInputRequiredDiskPersistsAutomationDispatch is a regression test for
+// the DBIMPROVE-598 follow-up gap: saveInputRequiredToDisk/
+// loadInputRequiredFromDisk used to round-trip only Kind/AutomationID/
+// TriggerType, dropping the full *AutomationDispatch and RequiresMoveState.
+// A daemon restart between "agent hit input-required" and "human replies"
+// would silently lose that context on load, so the eventual resume (see
+// processPendingInputResumes) would dispatch with automation=nil even though
+// Kind still said "automation" — the same class of bug fixed in-memory by
+// TestResumedAutomationRunCarriesFullAutomationDispatch, but reachable via a
+// restart instead of a same-process resume.
+func TestInputRequiredDiskPersistsAutomationDispatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "input_required.json")
+
+	o := New(&config.Config{}, nil, nil, nil)
+	o.SetInputRequiredFile(path)
+
+	automation := &AutomationDispatch{
+		AutomationID: "deploy-check",
+		ProfileName:  "deploy-checker",
+		Trigger: AutomationTriggerContext{
+			Type:         config.AutomationTriggerIssueEnteredState,
+			TriggerState: "04-With Developer",
+		},
+	}
+	awaiting := map[string]*InputRequiredEntry{
+		"DBIMPROVE-598": {
+			IssueID:           "id1",
+			Identifier:        "DBIMPROVE-598",
+			SessionID:         "s1",
+			Context:           "Should I move to QA?",
+			Backend:           "claude",
+			Command:           "claude",
+			QueuedAt:          time.Now(),
+			Kind:              "automation",
+			AutomationID:      "deploy-check",
+			TriggerType:       string(config.AutomationTriggerIssueEnteredState),
+			Automation:        automation,
+			RequiresMoveState: true,
+		},
+	}
+	pending := map[string]*PendingInputResumeEntry{
+		"DBIMPROVE-599": {
+			IssueID:           "id2",
+			Identifier:        "DBIMPROVE-599",
+			SessionID:         "s2",
+			UserMessage:       "Approved.",
+			QueuedAt:          time.Now(),
+			Kind:              "automation",
+			AutomationID:      "deploy-check",
+			TriggerType:       string(config.AutomationTriggerIssueEnteredState),
+			Automation:        automation,
+			RequiresMoveState: true,
+		},
+	}
+	o.saveInputRequiredToDisk(awaiting, pending)
+
+	loaded := o.loadInputRequiredFromDisk(NewState(&config.Config{}))
+
+	require.Contains(t, loaded.InputRequiredIssues, "DBIMPROVE-598")
+	awaitingGot := loaded.InputRequiredIssues["DBIMPROVE-598"]
+	require.NotNil(t, awaitingGot.Automation, "InputRequiredEntry.Automation must survive the disk round trip")
+	assert.Equal(t, "deploy-check", awaitingGot.Automation.AutomationID)
+	assert.Equal(t, "deploy-checker", awaitingGot.Automation.ProfileName)
+	assert.True(t, awaitingGot.RequiresMoveState)
+
+	require.Contains(t, loaded.PendingInputResumes, "DBIMPROVE-599")
+	pendingGot := loaded.PendingInputResumes["DBIMPROVE-599"]
+	require.NotNil(t, pendingGot.Automation, "PendingInputResumeEntry.Automation must survive the disk round trip")
+	assert.Equal(t, "deploy-check", pendingGot.Automation.AutomationID)
+	assert.True(t, pendingGot.RequiresMoveState)
 }

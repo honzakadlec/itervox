@@ -296,6 +296,12 @@ type OrchestratorClient interface {
 	// the dashboard (T-6). The implementation must be safe to call from an
 	// HTTP handler goroutine.
 	BumpCommentCount(identifier string)
+	// BumpMoveStateCount is invoked after a successful agent move_state
+	// action so the event loop can tell, at TerminalSucceeded, whether an
+	// automation profile granted move_state actually called it before the
+	// run exited. The implementation must be safe to call from an HTTP
+	// handler goroutine.
+	BumpMoveStateCount(identifier string)
 	// TestAutomation dispatches a one-off automation worker for the given
 	// rule against the given issue (T-10). The resulting run is tagged with
 	// TriggerType="test" so timeline / activity surfaces can distinguish it
@@ -358,6 +364,7 @@ func (noopClient) ProvideInput(string, string) bool                       { retu
 func (noopClient) DismissInput(string) bool                               { return false }
 func (noopClient) SetInlineInput(bool) error                              { return errNotConfigured }
 func (noopClient) BumpCommentCount(string)                                {}
+func (noopClient) BumpMoveStateCount(string)                              {}
 func (noopClient) TestAutomation(context.Context, string, string) error   { return errNotConfigured }
 
 // FuncClient builds an OrchestratorClient from individual function fields.
@@ -408,6 +415,7 @@ type FuncClient struct {
 	ProvideInputFn                    func(string, string) bool
 	DismissInputFn                    func(string) bool
 	BumpCommentCountFn                func(string)
+	BumpMoveStateCountFn              func(string)
 	TestAutomationFn                  func(context.Context, string, string) error
 }
 
@@ -676,6 +684,11 @@ func (c *FuncClient) SetInlineInput(enabled bool) error {
 func (c *FuncClient) BumpCommentCount(identifier string) {
 	if c.BumpCommentCountFn != nil {
 		c.BumpCommentCountFn(identifier)
+	}
+}
+func (c *FuncClient) BumpMoveStateCount(identifier string) {
+	if c.BumpMoveStateCountFn != nil {
+		c.BumpMoveStateCountFn(identifier)
 	}
 }
 func (c *FuncClient) TestAutomation(ctx context.Context, automationID, identifier string) error {

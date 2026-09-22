@@ -348,3 +348,73 @@ func TestResumedAutomationRunSurvivesReconcileAfterInputRequired(t *testing.T) {
 	_, stillRunning := state.Running["id1"]
 	assert.True(t, stillRunning, "reconcile must not kill a resumed automation-kind run sitting in a non-active trigger state")
 }
+
+// TestResumedAutomationRunCarriesFullAutomationDispatch is a regression test
+// for the DBIMPROVE-598 incident: Kind/AutomationID/TriggerType (checked
+// above) were already restored on the resumed RunEntry, but
+// processPendingInputResumes still hardcoded automation=nil in its call to
+// runWorker. runWorker derives its own local automationRun purely from that
+// parameter (worker.go: automationRun := automation != nil && ...), not from
+// RunEntry.Kind. So a resumed automation session was silently treated as an
+// ordinary worker: worker.go's `!automationRun`-gated completion-state
+// transition fired at the end of the resumed turn and stomped the issue back
+// to completion_state, undoing whatever the automation itself had just done
+// (deploy-checker moved DBIMPROVE-598 to "06-R4 QA"; the very next line
+// reverted it to completion_state "04-With Developer").
+func TestResumedAutomationRunCarriesFullAutomationDispatch(t *testing.T) {
+	cfg := testConfig()
+	cfg.Automations = []config.AutomationConfig{
+		{
+			ID:      "deploy-check",
+			Enabled: true,
+			Profile: "deploy-checker",
+			Trigger: config.AutomationTriggerConfig{
+				Type:  config.AutomationTriggerIssueEnteredState,
+				State: "With Developer",
+			},
+		},
+	}
+	issue := domain.Issue{
+		ID:         "id1",
+		Identifier: "ENG-1",
+		Title:      "Needs input",
+		State:      "With Developer",
+	}
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := New(cfg, mt, &blockedRunner{}, nil)
+
+	state := NewState(cfg)
+	// Mirrors what queueInputRequiredEntry now populates on InputRequiredEntry
+	// (and buildPendingInputResumeEntry carries into PendingInputResumeEntry)
+	// for a run originally dispatched by an issue_entered_state automation
+	// whose profile was granted move_state.
+	state.PendingInputResumes["ENG-1"] = &PendingInputResumeEntry{
+		IssueID:      "id1",
+		Identifier:   "ENG-1",
+		Context:      "Need approval",
+		UserMessage:  "Approved.",
+		QueuedAt:     time.Now(),
+		Kind:         "automation",
+		AutomationID: "deploy-check",
+		TriggerType:  string(config.AutomationTriggerIssueEnteredState),
+		Automation: &AutomationDispatch{
+			AutomationID: "deploy-check",
+			ProfileName:  "deploy-checker",
+			Trigger: AutomationTriggerContext{
+				Type:         config.AutomationTriggerIssueEnteredState,
+				TriggerState: "With Developer",
+			},
+		},
+		RequiresMoveState: true,
+	}
+
+	state = orch.processPendingInputResumes(context.Background(), state, time.Now())
+
+	running, ok := state.Running["id1"]
+	require.True(t, ok, "resumed run should be dispatched")
+	require.NotNil(t, running.Automation,
+		"resumed RunEntry must carry the full AutomationDispatch, not just the Kind tag — "+
+			"runWorker's automationRun is derived from the automation parameter alone")
+	assert.Equal(t, "deploy-check", running.Automation.AutomationID)
+	assert.True(t, running.RequiresMoveState, "RequiresMoveState must survive the resume round trip")
+}

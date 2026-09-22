@@ -110,6 +110,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		inputRequiredAutomationID = automation.AutomationID
 		inputRequiredTriggerType = automation.Trigger.Type
 	}
+	// inputRequiredAutomation carries the full dispatch context (not just the
+	// three scalars above) so a resumed run can be passed back into runWorker
+	// as a real automation, not automation=nil — see InputRequiredEntry.
+	// Automation doc in state.go. Nil unless this is a true automation-kind
+	// run (mirrors the automationForRetry nil-ing in startAutomationRun for
+	// UseIssueLifecycle automations).
+	var inputRequiredAutomation *AutomationDispatch
+	if automationRun {
+		automationCopy := *automation
+		inputRequiredAutomation = &automationCopy
+	}
 	hasResumeSession := resume != nil && resume.SessionID != ""
 	hasResumeMessage := resume != nil && resume.UserMessage != ""
 	inputRequiredResume := hasResumeSession && hasResumeMessage
@@ -239,6 +250,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	o.cfgMu.RUnlock()
 
 	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
+	// inputRequiredMoveStateGranted mirrors RunEntry.RequiresMoveState (see
+	// state.go doc) for the InputRequiredEntry this run may queue below.
+	inputRequiredMoveStateGranted := automationRun && slices.Contains(profileAllowedActions, config.AgentActionMoveState)
 	profileCreateIssueState := strings.TrimSpace(profilesSnap[profileName].CreateIssueState)
 	profileMoveIssueState := ""
 	if automation != nil && automation.Trigger.Type == config.AutomationTriggerBlockersResolved {
@@ -647,19 +661,21 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				cumulativeOutput,
 				result,
 			), &InputRequiredEntry{
-				IssueID:      issue.ID,
-				Identifier:   issue.Identifier,
-				SessionID:    sid,
-				Context:      inputContext,
-				BranchName:   activeBranchName,
-				Backend:      backend,
-				Command:      agentCommand,
-				WorkerHost:   workerHost,
-				ProfileName:  profileName,
-				QueuedAt:     time.Now(),
-				Kind:         inputRequiredKind,
-				AutomationID: inputRequiredAutomationID,
-				TriggerType:  inputRequiredTriggerType,
+				IssueID:           issue.ID,
+				Identifier:        issue.Identifier,
+				SessionID:         sid,
+				Context:           inputContext,
+				BranchName:        activeBranchName,
+				Backend:           backend,
+				Command:           agentCommand,
+				WorkerHost:        workerHost,
+				ProfileName:       profileName,
+				QueuedAt:          time.Now(),
+				Kind:              inputRequiredKind,
+				AutomationID:      inputRequiredAutomationID,
+				TriggerType:       inputRequiredTriggerType,
+				Automation:        inputRequiredAutomation,
+				RequiresMoveState: inputRequiredMoveStateGranted,
 			})
 			return
 		}
@@ -684,6 +700,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			inputRequiredKind,
 			inputRequiredAutomationID,
 			inputRequiredTriggerType,
+			inputRequiredAutomation,
+			inputRequiredMoveStateGranted,
 		) {
 			return
 		}
@@ -1054,6 +1072,8 @@ func (o *Orchestrator) queueSuccessfulTurnInputRequired(
 	startedAt time.Time,
 	turn, cumulativeInput, cumulativeCached, cumulativeOutput int,
 	inputRequiredKind, inputRequiredAutomationID, inputRequiredTriggerType string,
+	inputRequiredAutomation *AutomationDispatch,
+	inputRequiredMoveStateGranted bool,
 ) bool {
 	if ctx.Err() != nil {
 		return false
@@ -1094,6 +1114,8 @@ func (o *Orchestrator) queueSuccessfulTurnInputRequired(
 			inputRequiredKind,
 			inputRequiredAutomationID,
 			inputRequiredTriggerType,
+			inputRequiredAutomation,
+			inputRequiredMoveStateGranted,
 		)
 		return true
 	}
@@ -1136,6 +1158,8 @@ func (o *Orchestrator) queueSuccessfulTurnInputRequired(
 		inputRequiredKind,
 		inputRequiredAutomationID,
 		inputRequiredTriggerType,
+		inputRequiredAutomation,
+		inputRequiredMoveStateGranted,
 	)
 	return true
 }
@@ -1175,6 +1199,8 @@ func (o *Orchestrator) queueInputRequiredEntry(
 	backend, agentCommand, workerHost, profileName, branchName, inputContext, reason string,
 	runEntry *RunEntry,
 	kind, automationID, triggerType string,
+	automation *AutomationDispatch,
+	requiresMoveState bool,
 ) {
 	if reason == "" {
 		slog.Info("worker: agent requires input — queuing for user input",
@@ -1193,19 +1219,21 @@ func (o *Orchestrator) queueInputRequiredEntry(
 		sid = *claudeSessionID
 	}
 	o.sendExitWithInputRequired(ctx, runEntry, &InputRequiredEntry{
-		IssueID:      issue.ID,
-		Identifier:   issue.Identifier,
-		SessionID:    sid,
-		Context:      inputContext,
-		BranchName:   branchName,
-		Backend:      backend,
-		Command:      agentCommand,
-		WorkerHost:   workerHost,
-		ProfileName:  profileName,
-		QueuedAt:     time.Now(),
-		Kind:         kind,
-		AutomationID: automationID,
-		TriggerType:  triggerType,
+		IssueID:           issue.ID,
+		Identifier:        issue.Identifier,
+		SessionID:         sid,
+		Context:           inputContext,
+		BranchName:        branchName,
+		Backend:           backend,
+		Command:           agentCommand,
+		WorkerHost:        workerHost,
+		ProfileName:       profileName,
+		QueuedAt:          time.Now(),
+		Kind:              kind,
+		AutomationID:      automationID,
+		TriggerType:       triggerType,
+		Automation:        automation,
+		RequiresMoveState: requiresMoveState,
 	})
 }
 
