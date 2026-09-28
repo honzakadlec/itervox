@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
-	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/templates"
 )
 
 // generateWorkflow builds the WORKFLOW.md content from scanned repo info.
-func generateWorkflow(trackerKind, runner string, info repoInfo) string {
+func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath string) string {
 	var b strings.Builder
 
 	// ── frontmatter ───────────────────────────────────────────────────────────
@@ -116,6 +115,12 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	b.WriteString("  reviewer_profile: reviewer         # Profile used by the AI Review button and optional auto-review.\n")
 	b.WriteString("  deps_analyzer_profile: " + initDepsAnalyzerProfileName + "    # Profile used by the dashboard \"Analyze dependencies\" button. Empty disables the button.\n")
 	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run. Coexists with workspace.auto_clear as of v0.2.0 — the clear fires on terminal tracker state, after the reviewer also completes.\n")
+	b.WriteString("  # backend_fallback:                 # CORE-054: reroute when a backend hits its usage limit (docs/configuration.md).\n")
+	b.WriteString("  #   chain: [claude, codex]\n")
+	b.WriteString("  #   profile_map:                     # each target must exist, be enabled, and run that backend\n")
+	b.WriteString("  #     implementer: { codex: implementer-codex }\n")
+	b.WriteString("  #   switch_back: at_reset            # at_reset | on_success | manual\n")
+	b.WriteString("  #   min_dwell_minutes: 30\n")
 	b.WriteString("  reviewer_prompt: |\n")
 	b.WriteString("    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n")
 	b.WriteString("\n")
@@ -156,7 +161,18 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		cloneURL = "git@github.com:owner/" + info.ProjectName + ".git"
 	}
 	b.WriteString("\nworkspace:\n")
-	b.WriteString("  root: ~/.itervox/workspaces/" + info.ProjectName + "\n")
+	// Namespaced with the same derivation as the built-in default, NOT the
+	// bare project name. A workspace directory is keyed by issue identifier
+	// alone, and info.ProjectName is only the repo basename — so two checkouts
+	// named "api" under different owners shared a root, and EVERY non-git
+	// directory shared "my-project". Two agents would then check out different
+	// codebases into the same directory, and one project's auto_clear would
+	// delete the other's live worktree.
+	//
+	// Because init writes this explicitly, resolvePathValue never consults
+	// defaultWorkspaceRoot — so scaffolding the bare name here bypassed that
+	// protection entirely.
+	b.WriteString("  root: ~/.itervox/workspaces/" + config.WorkspaceProjectKey(workflowPath) + "\n")
 	b.WriteString("  worktree: true\n")
 	b.WriteString("  clone_url: " + cloneURL + "\n")
 	b.WriteString("  base_branch: " + info.DefaultBranch + "\n")
@@ -362,6 +378,7 @@ func runInit(args []string) {
 	_ = *templateName // currently scaffolds the same default; future presets emit different blocks.
 
 	if *update {
+		warnIfDaemonRunning(*workflowPath, "`itervox init --update`")
 		result, err := migrateWorkflowToSchema2(*workflowPath, *force, time.Now().UTC())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
@@ -387,6 +404,24 @@ func runInit(args []string) {
 		}
 		for _, warning := range result.Warnings {
 			fmt.Fprintf(os.Stderr, "itervox init --update: warning: %s\n", warning)
+		}
+		// --update returns here, so anything an EXISTING project still needs
+		// must be done before this point. The .env stub is one of them: the
+		// fresh-init path below creates it, but a project migrating an old
+		// WORKFLOW.md never reaches that code, so `init --update` left the
+		// operator with `api_key: $LINEAR_API_KEY` and no file to define it
+		// in — the daemon then hard-failed startup with "missing
+		// tracker.api_key" and no indication of where to put it.
+		//
+		// The tracker kind comes from the migrated workflow, not --tracker,
+		// which is not required for --update.
+		updateDir := filepath.Join(filepath.Dir(*workflowPath), ".itervox")
+		ensureEnvStub(updateDir, trackerKindFromWorkflow(*workflowPath))
+		// The nested .itervox/.gitignore is self-healed on daemon startup,
+		// but write it now so the .env just created is covered before the
+		// operator's next `git add`.
+		if err := finalizeItervoxGitignore(updateDir); err != nil {
+			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
 		}
 		return
 	}
@@ -456,9 +491,9 @@ func runInit(args []string) {
 	info.CodexModels = agent.ListCodexModels()
 	fmt.Printf("  models     : %d claude, %d codex\n", len(info.ClaudeModels), len(info.CodexModels))
 
-	content := generateWorkflow(*trackerKind, *runner, info)
+	content := generateWorkflow(*trackerKind, *runner, info, *output)
 
-	if err := atomicfs.WriteFile(*output, []byte(content), 0o644); err != nil {
+	if err := writeInitWorkflow(*output, []byte(content)); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", *output, err)
 		fatalExit(1)
 	}
@@ -483,21 +518,7 @@ func runInit(args []string) {
 	}
 	envDir := filepath.Join(outputDir, ".itervox")
 	envPath := filepath.Join(envDir, ".env")
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		_ = os.MkdirAll(envDir, 0o755)
-		var envContent string
-		switch *trackerKind {
-		case "linear":
-			envContent = "# Itervox environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nLINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
-		case "github":
-			envContent = "# Itervox environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nGITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
-		}
-		if err := os.WriteFile(envPath, []byte(envContent), 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", envPath, err)
-		} else {
-			fmt.Printf("itervox init: wrote %s\n", envPath)
-		}
-	}
+	ensureEnvStub(envDir, *trackerKind)
 
 	// Ensure .itervox runtime files are gitignored and the root .gitignore
 	// has carve-outs for agent / handoff dirs (no-op if root .gitignore
@@ -524,11 +545,20 @@ func runInit(args []string) {
 		// Load the freshly-written .env so the analysis pass sees the same
 		// secrets the daemon will see on first launch.
 		loadDotEnv()
-		issueCount, edgeCount, sidecarPath, err := runInitDepsAnalysis(*output)
-		if err != nil {
+		issueCount, analyzedCount, edgeCount, sidecarPath, guarded, err := runInitDepsAnalysis(*output, "auto")
+		switch {
+		case err != nil:
 			fmt.Fprintf(os.Stderr, "itervox init: WARNING: dependency analysis pass skipped (%v); run \"itervox deps analyze\" or click \"Analyze dependencies\" from the dashboard once credentials are configured.\n", err)
-		} else {
-			fmt.Printf("itervox init: analyzed %d issue(s); inferred %d edge(s) (wrote %s)\n", issueCount, edgeCount, sidecarPath)
+		case guarded:
+			// First-run init against an empty fetch with a pre-existing
+			// sidecar (e.g. --update re-running init) — nothing was
+			// written; see the empty-fetch guard in runInitDepsAnalysis.
+			fmt.Printf("itervox init: fetch returned no issues; refusing to overwrite %d inferred edge(s) already in %s (sidecar left unchanged)\n", edgeCount, sidecarPath)
+		default:
+			// #52 IssuesScanned honesty — see deps.go's runDepsAnalyze for
+			// the same phrasing.
+			fmt.Printf("itervox init: scanned %d issue(s) (%d analyzed, %d revalidated); inferred %d edge(s) (wrote %s)\n",
+				issueCount, analyzedCount, issueCount-analyzedCount, edgeCount, sidecarPath)
 		}
 	}
 
@@ -538,12 +568,22 @@ func runInit(args []string) {
 	if *output != "WORKFLOW.md" {
 		runCmd = "itervox -workflow " + *output
 	}
+	nextStep := 2
 	if *trackerKind == "linear" {
-		fmt.Printf("  2. Run: %s\n", runCmd)
-		fmt.Printf("  3. Select a project via the TUI (press p) or the web dashboard\n")
+		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
+		nextStep++
+		fmt.Printf("  %d. Select a project via the TUI (press p) or the web dashboard\n", nextStep)
+		nextStep++
 	} else {
-		fmt.Printf("  2. Run: %s\n", runCmd)
+		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
+		nextStep++
 	}
+	// server.port: 0 above means the daemon binds an OS-assigned port, not
+	// the 8090 default — find the actual URL with one of these instead of
+	// guessing a port (CORE-022).
+	fmt.Printf("  %d. Find the dashboard URL: check .itervox/dashboard_url, press 'w' in the TUI to copy it, or run \"itervox doctor\"\n", nextStep)
+	nextStep++
+	fmt.Printf("  %d. Run \"itervox doctor\" to validate agent commands, tracker credentials, and config before the first real dispatch\n", nextStep)
 }
 
 func existingWorkflowInitMessage(output string) string {

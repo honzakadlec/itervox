@@ -40,6 +40,7 @@ import (
 // review. v0.2.0 audit P2-4.
 var AllowedMutableCfgFields = map[string]struct{}{
 	"Agent.AutoReview":                   {},
+	"Agent.AvailableModels":              {},
 	"Agent.DepsAnalyzerProfile":          {},
 	"Agent.DispatchStrategy":             {},
 	"Agent.InlineInput":                  {},
@@ -54,6 +55,7 @@ var AllowedMutableCfgFields = map[string]struct{}{
 	"Agent.SwitchRevertHours":            {},
 	"Agent.SwitchWindowHours":            {},
 	"Automations":                        {},
+	"Dependencies.AnalysisMode":          {},
 	"Tracker.ActiveStates":               {},
 	"Tracker.CompletionState":            {},
 	"Tracker.FailedState":                {},

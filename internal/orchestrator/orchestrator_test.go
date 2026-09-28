@@ -106,11 +106,11 @@ func TestCancelResumeRace(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			orch.CancelIssue("ENG-1")
+			_ = orch.CancelIssue("ENG-1")
 		}()
 		go func() {
 			defer wg.Done()
-			orch.ResumeIssue("ENG-1")
+			_ = orch.ResumeIssue("ENG-1")
 		}()
 	}
 	wg.Wait()
@@ -177,7 +177,7 @@ func TestReanalyzeIssueRace(t *testing.T) {
 
 	// First pause the issue so ReanalyzeIssue has something to operate on.
 	time.Sleep(30 * time.Millisecond)
-	orch.CancelIssue("ENG-1")
+	_ = orch.CancelIssue("ENG-1")
 	time.Sleep(20 * time.Millisecond)
 
 	var wg sync.WaitGroup
@@ -185,7 +185,7 @@ func TestReanalyzeIssueRace(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			orch.ReanalyzeIssue("ENG-1")
+			_ = orch.ReanalyzeIssue("ENG-1")
 		}()
 	}
 	wg.Wait()
@@ -207,12 +207,12 @@ func TestCancelIssue_NotRunning(t *testing.T) {
 	orch := orchestrator.New(cfg, mt, fake, nil)
 	// Do not call Run — no workers are dispatched.
 
-	ok := orch.CancelIssue("ENG-99")
-	require.False(t, ok, "cancel should return false when no worker is running")
+	err := orch.CancelIssue("ENG-99")
+	require.ErrorIs(t, err, orchestrator.ErrNotFound, "cancel should return ErrNotFound when no worker is running")
 
-	// Marker should be cleaned up — second call also returns false.
-	ok = orch.CancelIssue("ENG-99")
-	require.False(t, ok)
+	// Marker should be cleaned up — second call also returns ErrNotFound.
+	err = orch.CancelIssue("ENG-99")
+	require.ErrorIs(t, err, orchestrator.ErrNotFound)
 }
 
 func TestCancelIssue_Running(t *testing.T) {
@@ -246,8 +246,8 @@ func TestCancelIssue_Running(t *testing.T) {
 		t.Fatal("worker did not appear in snapshot within 1s")
 	}
 
-	ok := orch.CancelIssue("ENG-1")
-	require.True(t, ok, "cancel should return true for a running worker")
+	err := orch.CancelIssue("ENG-1")
+	require.NoError(t, err, "cancel should succeed for a running worker")
 }
 
 func TestDispatchReviewer_NoProfileConfigured(t *testing.T) {
@@ -273,9 +273,9 @@ type trackingRunner struct {
 	done chan struct{}
 }
 
-func (r *trackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *trackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.once.Do(func() { close(r.done) })
-	return r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+	return r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs, agent.PermissionBypass)
 }
 
 type capturingRunner struct {
@@ -287,13 +287,13 @@ type capturingRunner struct {
 	prompt  string
 }
 
-func (r *capturingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *capturingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.command = command
 	r.prompt = prompt
 	r.mu.Unlock()
 	r.once.Do(func() { close(r.done) })
-	return r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+	return r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs, agent.PermissionBypass)
 }
 
 func (r *capturingRunner) LastCommand() string {
@@ -752,6 +752,6 @@ func TestSetLogBuffer(t *testing.T) {
 
 func TestTerminateIssue_NotRunning(t *testing.T) {
 	o := newOrch()
-	// Neither running nor paused — should return false.
-	assert.False(t, o.TerminateIssue("ENG-99"))
+	// Neither running nor paused — should return ErrNotFound.
+	assert.ErrorIs(t, o.TerminateIssue("ENG-99"), orchestrator.ErrNotFound)
 }

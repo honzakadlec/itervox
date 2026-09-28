@@ -13,6 +13,8 @@ import {
 } from '@dnd-kit/core';
 import { useShallow } from 'zustand/react/shallow';
 import IssueCard from '../../../components/itervox/IssueCard';
+import { BOARD_DND_ACCESSIBILITY } from '../../../components/itervox/BoardColumn/boardAnnouncements';
+import { columnKeyboardCoordinates } from '../../../components/itervox/BoardColumn/columnKeyboardCoordinates';
 import BoardColumn from '../../../components/itervox/BoardColumn';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import type { TrackerIssue, InputRequiredEntry } from '../../../types/schemas';
@@ -53,6 +55,7 @@ export function BoardView({
     inputRequired,
     retrying,
     maxRetries,
+    outboxSyncing,
   } = useItervoxStore(
     useShallow((s) => ({
       snapshotLoaded: s.snapshot !== null,
@@ -67,6 +70,7 @@ export function BoardView({
       inputRequired: s.snapshot?.inputRequired ?? EMPTY_INPUT_REQUIRED,
       retrying: s.snapshot?.retrying ?? EMPTY_RETRYING,
       maxRetries: s.snapshot?.maxRetries ?? 5,
+      outboxSyncing: s.snapshot?.outboxSyncing ?? EMPTY_STATES,
     })),
   );
   const [activeIssue, setActiveIssue] = useState<TrackerIssue | null>(null);
@@ -143,10 +147,14 @@ export function BoardView({
     return map;
   }, [retrying]);
 
+  // outbox Task 4 — snapshot.outboxSyncing is the sorted join-key list; the
+  // card badge joins by identifier against this set.
+  const syncingIdentifiers = useMemo(() => new Set(outboxSyncing), [outboxSyncing]);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
-    useSensor(KeyboardSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: columnKeyboardCoordinates }),
   );
 
   const firstActiveState = activeStates[0] ?? '';
@@ -209,6 +217,7 @@ export function BoardView({
   return (
     <DndContext
       sensors={sensors}
+      accessibility={BOARD_DND_ACCESSIBILITY}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
@@ -235,6 +244,7 @@ export function BoardView({
             inputRequiredStaleByIdentifier={inputRequiredStaleByIdentifier}
             retryAttemptByIdentifier={retryAttemptByIdentifier}
             maxRetries={maxRetries}
+            syncingIdentifiers={syncingIdentifiers}
           />
         ))}
       </div>

@@ -23,6 +23,7 @@ import (
 func runDoctor(args []string) {
 	workflowPath := "WORKFLOW.md"
 	clearStartupError := false
+	deploy := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -33,22 +34,46 @@ func runDoctor(args []string) {
 			workflowPath = strings.TrimPrefix(a, "--workflow=")
 		case a == "--clear-startup-error":
 			clearStartupError = true
+		case a == "--deploy":
+			deploy = true
 		case a == "-h" || a == "--help":
-			fmt.Println("usage: itervox doctor [--workflow PATH] [--clear-startup-error]")
-			fmt.Println("  --clear-startup-error  remove .itervox/STARTUP_ERROR.md if present (use after fixing the root cause)")
+			printDoctorUsage(os.Stdout)
 			return
+		default:
+			// CORE-063: an unknown flag used to be ignored silently, so a
+			// typo (or `--deploy` on an older binary) looked like a pass.
+			fmt.Fprintf(os.Stderr, "doctor: unknown flag %q\n", a)
+			printDoctorUsage(os.Stderr)
+			fatalExit(2)
 		}
 	}
 	if clearStartupError {
 		clearStartupErrorMarker(workflowPath)
 	}
+	if deploy {
+		// Probe with the credentials the daemon would have: it loads
+		// .itervox/.env next to WORKFLOW.md at startup (never overriding
+		// variables already set).
+		loadDotEnvFrom(filepath.Dir(workflowPath))
+	}
 	report, exitCode := runDoctorChecks(workflowPath, os.Stdout)
+	if deploy {
+		deployReport, deployCode := runDeployDoctor(workflowPath, defaultDeployProbeEnv())
+		report += deployReport
+		exitCode = max(exitCode, deployCode)
+	}
 	if _, err := io.WriteString(os.Stdout, report); err != nil {
 		fmt.Fprintf(os.Stderr, "doctor: write report: %v\n", err)
 	}
 	if exitCode != 0 {
 		fatalExit(exitCode)
 	}
+}
+
+func printDoctorUsage(w io.Writer) {
+	_, _ = fmt.Fprintln(w, "usage: itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy]")
+	_, _ = fmt.Fprintln(w, "  --clear-startup-error  remove .itervox/STARTUP_ERROR.md if present (use after fixing the root cause)")
+	_, _ = fmt.Fprintln(w, "  --deploy               also probe agent credentials, gh auth, git push auth (dry-run), the tracker API and the daemon's /api/v1/ready; exits 1 on any [fail]")
 }
 
 // DoctorReport is the structured outcome of `itervox doctor`. Exposed for
@@ -84,6 +109,14 @@ type DoctorReport struct {
 	// GitignoreMissingLines reports missing required lines in .itervox/.gitignore,
 	// if the file exists but is incomplete.
 	GitignoreMissingLines []string
+	// UnresolvableProfileCommands lists "profile: command" pairs whose agent
+	// binary is not on PATH. Without this, a mis-resolved command surfaced
+	// only at dispatch time as a runtime failure buried in the daemon log —
+	// typically for a tool installed under a version manager (nvm, asdf,
+	// rbenv), whose bin directory is on PATH in an interactive shell but not
+	// in the environment the daemon was started from, and whose path changes
+	// on every version switch.
+	UnresolvableProfileCommands []string
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -137,13 +170,30 @@ func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 	// held by a process that is NOT this WORKFLOW.md's recorded daemon, the
 	// operator either left a stray daemon running or has the Vite proxy /
 	// `localhost:<port>` open against the wrong process.
+	//
+	// The holder PID is compared against this WORKFLOW.md's recorded daemon,
+	// because the `cfg.Server.Port != nil` guard no longer means "the
+	// operator named a port": server.port now defaults to 8090, so config
+	// load ALWAYS populates it. Without the PID check every healthy daemon
+	// reported its own listening socket as a collision — a warning plus
+	// exit 1 from `itervox doctor` on a perfectly good setup.
 	if cfg != nil && cfg.Server.Port != nil {
 		port := *cfg.Server.Port
-		if holder := describePortHolder(port); holder != "" {
+		holder, holderPID := describePortHolderWithPID(port)
+		ownPID, _, _, pidErr := readPIDFile(workflowPath)
+		selfHeld := pidErr == nil && holderPID != 0 && holderPID == ownPID
+		if holder != "" && !selfHeld {
 			report.PortInUseWarning = fmt.Sprintf(
 				"port %d in use%s — if this is not your expected itervox daemon, the dashboard URL will reach the wrong process",
 				port, holder)
 		}
+	}
+
+	// Agent command resolution: every configured profile's binary must be
+	// findable, or that profile fails at dispatch time with nothing but a
+	// shell "command not found" in the log.
+	if cfg != nil {
+		report.UnresolvableProfileCommands = unresolvableProfileCommands(cfg)
 	}
 
 	// Stale HEARTBEAT.md detection: file exists, but the recorded daemon PID
@@ -196,6 +246,10 @@ func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 		// info and does not change the exit code.
 		exitCode = 1
 	case report.StartupErrorPath != "":
+		exitCode = 1
+	case len(report.UnresolvableProfileCommands) > 0:
+		// A profile that cannot start is a broken configuration, not a note:
+		// the daemon runs and silently fails every dispatch to that profile.
 		exitCode = 1
 	case report.PortInUseWarning != "":
 		exitCode = 1
@@ -255,6 +309,9 @@ func renderDoctorReport(r DoctorReport) string {
 	}
 	if r.StartupErrorPath != "" {
 		fmt.Fprintf(&b, "last startup error: %s — investigate the file, then `itervox doctor --clear-startup-error` once resolved\n", r.StartupErrorPath)
+	}
+	for _, pair := range r.UnresolvableProfileCommands {
+		fmt.Fprintf(&b, "ERROR: agent command not found on PATH: %s — set the profile's `command` to an absolute path, or start the daemon from a shell where it resolves\n", pair)
 	}
 	if r.PortInUseWarning != "" {
 		fmt.Fprintf(&b, "WARNING: %s\n", r.PortInUseWarning)

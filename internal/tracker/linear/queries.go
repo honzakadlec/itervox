@@ -25,6 +25,9 @@ query ItervoxLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: 
           issue { id identifier url state { name } }
         }
       }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
+      }
       createdAt
       updatedAt
     }
@@ -52,6 +55,9 @@ query ItervoxIssueDetail($id: String!) {
         issue { id identifier url state { name } }
       }
     }
+    children(first: 50) {
+      nodes { id identifier url state { name } }
+    }
     comments(first: 50, orderBy: createdAt) {
       nodes {
         id
@@ -59,9 +65,28 @@ query ItervoxIssueDetail($id: String!) {
         createdAt
         user { id name }
       }
+      pageInfo { hasNextPage endCursor }
     }
     createdAt
     updatedAt
+  }
+}`
+
+// QueryIssueComments reads one further page of an issue's comments, after the
+// first page the detail queries return (CORE-124). Its page size and ordering
+// match theirs so the cursor they hand back continues the same sequence.
+const QueryIssueComments = `
+query ItervoxIssueComments($id: String!, $after: String) {
+  issue(id: $id) {
+    comments(first: 50, after: $after, orderBy: createdAt) {
+      nodes {
+        id
+        body
+        createdAt
+        user { id name }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
   }
 }`
 
@@ -107,6 +132,9 @@ query ItervoxLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst
           issue { id identifier url state { name } }
         }
       }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
+      }
       createdAt
       updatedAt
     }
@@ -136,6 +164,9 @@ query ItervoxLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relatio
           issue { id identifier url state { name } }
         }
       }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
+      }
       createdAt
       updatedAt
     }
@@ -152,6 +183,55 @@ query ItervoxListProjects {
       id
       name
       slugId
+    }
+  }
+}`
+
+// QueryIssueDetailsByIDs is QueryIssuesByIDs plus the comments block, so a
+// batch of issues can be fetched with the full detail the single-issue
+// QueryIssueDetail returns.
+//
+// It exists because the hot paths that dominated issue #42's request budget —
+// the tracker-reply check, the pending-input resume, and the input-required
+// replay — all read Comments, which QueryIssuesByIDs deliberately omits. They
+// therefore could not use FetchIssueStatesByIDs and stayed one-request-per-issue.
+//
+// The comments page size matches QueryIssueDetail (50). Raising it multiplies
+// across every issue in the batch, so it is deliberately not parameterised.
+const QueryIssueDetailsByIDs = `
+query ItervoxLinearIssueDetailsById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
+  issues(filter: {id: {in: $ids}}, first: $first) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      trashed
+      labels { nodes { name } }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue { id identifier url state { name } }
+        }
+      }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
+      }
+      comments(first: 50, orderBy: createdAt) {
+        nodes {
+          id
+          body
+          createdAt
+          user { id name }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+      createdAt
+      updatedAt
     }
   }
 }`
@@ -177,8 +257,23 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
           issue { id identifier url state { name } }
         }
       }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
+      }
       createdAt
       updatedAt
     }
+  }
+}`
+
+// mutationUpdateIssueState transitions an issue to a resolved state UUID.
+// Package-level (rather than local to UpdateIssueState, like the client's
+// other mutations) solely so intent_internal_test.go can exercise
+// withOperationIntent against a real mutation document without reaching into
+// an unexported function's local scope.
+const mutationUpdateIssueState = `
+mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
+  issueUpdate(id: $issueId, input: { stateId: $stateId }) {
+    success
   }
 }`

@@ -3,13 +3,17 @@ package orchestrator
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/domain"
 )
 
@@ -37,27 +41,7 @@ func (o *Orchestrator) Snapshot() State {
 	o.snapMu.RLock()
 	snap := o.lastSnap
 	o.snapMu.RUnlock()
-	snap.Running = copyRunningMap(snap.Running)
-	snap.Claimed = maps.Clone(snap.Claimed)
-	snap.RetryAttempts = copyRetryMap(snap.RetryAttempts)
-	snap.PausedIdentifiers = maps.Clone(snap.PausedIdentifiers)
-	snap.PausedSessions = maps.Clone(snap.PausedSessions)
-	snap.IssueProfiles = maps.Clone(snap.IssueProfiles)
-	snap.IssueBackends = maps.Clone(snap.IssueBackends)
-	snap.ForceReanalyze = maps.Clone(snap.ForceReanalyze)
-	snap.PrevActiveIdentifiers = maps.Clone(snap.PrevActiveIdentifiers)
-	snap.PrevIssueStates = maps.Clone(snap.PrevIssueStates)
-	snap.IssueStatusHistory = copyIssueStatusHistoryMap(snap.IssueStatusHistory)
-	snap.DiscardingIdentifiers = maps.Clone(snap.DiscardingIdentifiers)
-	snap.AutoSwitchedIdentifiers = maps.Clone(snap.AutoSwitchedIdentifiers)
-	snap.AutoSwitchedAt = maps.Clone(snap.AutoSwitchedAt)
-	snap.InputRequiredIssues = maps.Clone(snap.InputRequiredIssues)
-	snap.PendingInputResumes = maps.Clone(snap.PendingInputResumes)
-	snap.AutomationQueue = copyAutomationQueueMap(snap.AutomationQueue)
-	snap.AutomationQueueOrder = append([]string(nil), snap.AutomationQueueOrder...)
-	snap.DependencyAudit = copyDependencyAuditMap(snap.DependencyAudit)
-	snap.PROpenedDispatched = maps.Clone(snap.PROpenedDispatched)
-	snap.PRMergedDispatched = maps.Clone(snap.PRMergedDispatched)
+	snap = snap.Clone()
 
 	o.issueProfilesMu.RLock()
 	if len(o.issueProfiles) > 0 {
@@ -89,46 +73,29 @@ func (o *Orchestrator) Snapshot() State {
 	}
 	o.issueBackendsMu.RUnlock()
 
+	snap.PersistWriteErrors = o.persistWriteErrors.Load()
 	return snap
 }
 
 const maxHistory = 200
 
-func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-
-	tmp, err := os.CreateTemp(dir, base+".tmp-*")
-	if err != nil {
-		return err
+// writeLedgerFile is the single write path for every orchestrator ledger
+// (history, paused, pause reasons, input-required, automation queue,
+// auto-switched, deps overrides). It delegates to atomicfs.WriteFile —
+// temp file in the same directory, fsync, chmod, rename, then a best-effort
+// parent-directory fsync — so a reader (or a restart after a crash) sees
+// either the previous complete file or the new complete file, never a torn
+// one. The parent-dir fsync is best-effort (atomicfs swallows ENOTSUP /
+// EINVAL), so this is not a crash-proof durability claim for the directory
+// entry. CORE-037.
+//
+// o.persistWriteFile is a test seam (a fake writer that blocks, fails or
+// counts); nil means atomicfs.WriteFile.
+func (o *Orchestrator) writeLedgerFile(path string, data []byte, perm fs.FileMode) error {
+	if o.persistWriteFile != nil {
+		return o.persistWriteFile(path, data, perm)
 	}
-	tmpPath := tmp.Name()
-	removeTmp := true
-	defer func() {
-		if removeTmp {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpPath, perm); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	removeTmp = false
-	return nil
+	return atomicfs.WriteFile(path, data, perm)
 }
 
 // SetHistoryFile sets the path for persisting completed runs across restarts.
@@ -198,31 +165,35 @@ func (o *Orchestrator) loadHistoryFromDisk() {
 //
 // INVARIANT: must only be called from the single event-loop goroutine (onTick
 // and its callees). The event loop is the sole writer of completedRuns; the
-// historyMu lock exists only to synchronise concurrent readers such as the SSE
-// and REST handlers. historyMu is released before the disk write so those
-// readers are never blocked by I/O.
+// historyMu lock exists to synchronise concurrent readers such as the SSE and
+// REST handlers, and ClearHistory.
+//
+// CORE-151: the history version is marshalled AND submitted to the history
+// ledger while historyMu is held, and ClearHistory submits its removal under
+// the same lock. Submission order therefore equals history order, and the
+// ledger writes versions in submission order, so a clear can never be undone
+// by a write of pre-clear history that was already in flight. The disk I/O
+// itself (settle) runs after historyMu is released, so readers are never
+// blocked by it.
 func (o *Orchestrator) addCompletedRun(run CompletedRun) {
 	o.historyMu.Lock()
 	o.completedRuns = append(o.completedRuns, run)
 	if len(o.completedRuns) > maxHistory {
 		o.completedRuns = o.completedRuns[len(o.completedRuns)-maxHistory:]
 	}
-	// Snapshot the slice and the path while holding the lock, then release
-	// before performing disk I/O so concurrent readers are not blocked.
 	path := o.historyFile
-	snapshot := make([]CompletedRun, len(o.completedRuns))
-	copy(snapshot, o.completedRuns)
-	o.historyMu.Unlock()
-
+	submitted := false
 	if path != "" {
-		data, err := json.Marshal(snapshot)
+		data, err := json.Marshal(o.completedRuns)
 		if err != nil {
 			slog.Warn("orchestrator: failed to marshal history entries", "error", err)
-			return
+		} else {
+			submitted = o.ledger(ledgerHistory).submit(path, data, 0o644)
 		}
-		if err := writeFileAtomically(path, data, 0o644); err != nil {
-			slog.Warn("orchestrator: failed to write history file", "path", path, "error", err)
-		}
+	}
+	o.historyMu.Unlock()
+	if submitted {
+		o.ledger(ledgerHistory).settle()
 	}
 }
 
@@ -302,10 +273,19 @@ type inputRequiredDisk struct {
 	Command            string `json:"command"`
 	WorkerHost         string `json:"worker_host,omitempty"`
 	ProfileName        string `json:"profile_name,omitempty"`
+	QuestionCommentKey string `json:"question_comment_key,omitempty"`
 	QuestionCommentID  string `json:"question_comment_id,omitempty"`
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
 	QuestionAuthorName string `json:"question_author_name,omitempty"`
 	QueuedAt           string `json:"queued_at"`
+	// LastReplyCheckAt persists the reply-check fairness ordering across
+	// restarts and config reloads. Without it every reload zeroed the key for
+	// every entry, so selectTrackerReplyCheckBatch fell through to its
+	// identifier tie-break and restarted at the alphabetically-first five —
+	// on a backlog larger than the budget, entries sorting later were never
+	// checked at all. That is the exact starvation the ordering exists to
+	// prevent, and an operator iterating on WORKFLOW.md reloads often.
+	LastReplyCheckAt string `json:"last_reply_check_at,omitempty"`
 }
 
 type pendingInputResumeDisk struct {
@@ -319,6 +299,7 @@ type pendingInputResumeDisk struct {
 	Command            string `json:"command"`
 	WorkerHost         string `json:"worker_host,omitempty"`
 	ProfileName        string `json:"profile_name,omitempty"`
+	QuestionCommentKey string `json:"question_comment_key,omitempty"`
 	QuestionCommentID  string `json:"question_comment_id,omitempty"`
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
 	QuestionAuthorName string `json:"question_author_name,omitempty"`
@@ -366,10 +347,12 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           v.QueuedAt.Format(time.RFC3339),
+			LastReplyCheckAt:   formatOptionalTime(v.LastReplyCheckAt),
 		}
 	}
 	pendingDisk := make(map[string]pendingInputResumeDisk, len(pending))
@@ -385,6 +368,7 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
@@ -399,9 +383,7 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 		slog.Warn("orchestrator: failed to marshal input-required entries", "error", err)
 		return
 	}
-	if err := writeFileAtomically(path, data, 0o644); err != nil {
-		slog.Warn("orchestrator: failed to write input-required file", "path", path, "error", err)
-	}
+	o.persistLedger(ledgerInputRequired, path, data, 0o644)
 }
 
 // loadInputRequiredFromDisk reads the input-required file and pre-populates
@@ -455,10 +437,12 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           queuedAt,
+			LastReplyCheckAt:   parseOptionalTime(v.LastReplyCheckAt),
 		}
 	}
 	for k, v := range pending {
@@ -474,6 +458,7 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
@@ -544,9 +529,7 @@ func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQ
 		slog.Warn("orchestrator: failed to envelope automation queue", "error", err)
 		return
 	}
-	if err := writeFileAtomically(path, data, 0o600); err != nil {
-		slog.Warn("orchestrator: failed to write automation queue file", "path", path, "error", err)
-	}
+	o.persistLedger(ledgerAutomationQueue, path, data, 0o600)
 }
 
 func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
@@ -574,11 +557,8 @@ func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
 				slog.Warn("orchestrator: queue envelope warning", "path", path, "reason", reason)
 			}
 		} else if errors.Is(decodeErr, ErrQueueEnvelopeQuarantined) {
-			quarantinePath := path + ".quarantine"
-			if writeErr := writeFileAtomically(quarantinePath, data, 0o600); writeErr != nil {
-				slog.Warn("orchestrator: failed to write quarantine file", "path", quarantinePath, "error", writeErr)
-			}
-			slog.Warn("orchestrator: automation queue envelope quarantined", "path", path, "error", decodeErr)
+			quarantinePath := o.writeQuarantineCopy(path, data) // CORE-173 c
+			slog.Warn("orchestrator: automation queue envelope quarantined", "path", path, "quarantine", quarantinePath, "error", decodeErr)
 			return state
 		}
 	}
@@ -644,15 +624,17 @@ func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
 	// nothing. Old payloads simply lack these keys → nil ledger + zero seq,
 	// which is today's behavior.
 	if len(disk.DependencyAudit) > 0 {
-		state.DependencyAudit = copyDependencyAuditMap(disk.DependencyAudit)
+		state.DependencyAudit = copyDependencyAuditMapForRestore(disk.DependencyAudit)
 	}
 	state.DependencyTransitionSeq = disk.DependencyTransitionSeq
-	// AUTO-4 aggravator — auditBlockersResolvedAutomationSources early-returns
-	// when DependencyTransitionSeq == LastBlockersResolvedAuditSeq (both 0 after
-	// a fresh restart), which would skip the one scan needed to notice blockers
-	// that closed while the daemon was down. Seed the watermark one behind the
-	// restored seq so the next pass runs exactly once, then re-converges (the
-	// pass sets LastBlockersResolvedAuditSeq = DependencyTransitionSeq).
+	// AUTO-4 aggravator — pendingBlockersResolvedStates (consulted by
+	// reconcileDependencyRefresh) treats DependencyTransitionSeq ==
+	// LastBlockersResolvedAuditSeq as "nothing pending" and skips the batch
+	// (both are 0 after a fresh restart), which would skip the one scan
+	// needed to notice blockers that closed while the daemon was down. Seed
+	// the watermark one behind the restored seq so the next pass runs
+	// exactly once, then re-converges (the apply handler sets
+	// LastBlockersResolvedAuditSeq = the launch-time seq it was given).
 	if len(state.DependencyAudit) > 0 {
 		state.LastBlockersResolvedAuditSeq = state.DependencyTransitionSeq - 1
 	}
@@ -675,15 +657,24 @@ func copyRunningMap(m map[string]*RunEntry) map[string]*RunEntry {
 		}
 		e := *v              // copy struct value
 		e.WorkerCancel = nil // not safe to share across goroutines
+		e.Issue = copyDomainIssue(v.Issue)
 		cp[k] = &e
 	}
 	return cp
 }
 
-// copyRetryMap returns a shallow copy of a map[string]*RetryEntry.
+// copyRetryMap returns a copy of a map[string]*RetryEntry with each entry
+// copied by value (RetryEntry.Error is an immutable *string, shared).
 func copyRetryMap(m map[string]*RetryEntry) map[string]*RetryEntry {
 	cp := make(map[string]*RetryEntry, len(m))
-	maps.Copy(cp, m)
+	for k, v := range m {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		e := *v
+		cp[k] = &e
+	}
 	return cp
 }
 
@@ -720,10 +711,64 @@ func copyDependencyAuditMap(m map[string]*DependencyAuditEntry) map[string]*Depe
 	return cp
 }
 
+// copyDependencyAuditMapForRestore deep-copies the persisted dependency-audit
+// ledger and clears the transient in-flight latch. Used only on the envelope
+// restore path — a daemon that crashed mid-refresh must not come back up with
+// rows marked in-flight, because nothing would ever clear them.
+func copyDependencyAuditMapForRestore(m map[string]*DependencyAuditEntry) map[string]*DependencyAuditEntry {
+	cp := copyDependencyAuditMap(m)
+	for _, entry := range cp {
+		if entry == nil {
+			continue
+		}
+		entry.InFlight = false
+	}
+	return cp
+}
+
 func copyIssueStatusHistoryMap(m map[string][]IssueStatusChange) map[string][]IssueStatusChange {
 	cp := make(map[string][]IssueStatusChange, len(m))
 	for k, v := range m {
 		cp[k] = append([]IssueStatusChange(nil), v...)
+	}
+	return cp
+}
+
+// copyInferredDepsMap deep-copies State.InferredDeps. Entries are plain
+// values (InferredDepEntry has no pointer/map fields), so copying the map and
+// each per-target slice is sufficient — mirrors copyIssueStatusHistoryMap.
+func copyInferredDepsMap(m map[string][]InferredDepEntry) map[string][]InferredDepEntry {
+	cp := make(map[string][]InferredDepEntry, len(m))
+	for k, v := range m {
+		cp[k] = append([]InferredDepEntry(nil), v...)
+	}
+	return cp
+}
+
+// copyDependencyCycles deep-copies State.DependencyCycles. Each
+// DependencyCycle's Members slice is independently copied so a mutation on
+// the live event-loop slice cannot leak into an already-published snapshot.
+// A nil input returns an empty, non-nil slice — matching the map-copy
+// siblings above (copyRunningMap, copyAutomationQueueMap, ...), which all
+// `make(..., len(m))` regardless of whether the source was nil, so JSON
+// marshaling of a snapshot with no cycles emits `[]` rather than `null`.
+func copyDependencyCycles(cycles []DependencyCycle) []DependencyCycle {
+	cp := make([]DependencyCycle, len(cycles))
+	for i, c := range cycles {
+		cp[i] = c
+		cp[i].Members = append([]string(nil), c.Members...)
+	}
+	return cp
+}
+
+// copyDependencyAttention deep-copies State.DependencyAttention. Each
+// entry's Blockers slice is independently copied, mirroring
+// copyDependencyCycles — including the nil-in/empty-out behavior.
+func copyDependencyAttention(entries []DependencyAttentionEntry) []DependencyAttentionEntry {
+	cp := make([]DependencyAttentionEntry, len(entries))
+	for i, e := range entries {
+		cp[i] = e
+		cp[i].Blockers = append([]string(nil), e.Blockers...)
 	}
 	return cp
 }
@@ -748,6 +793,58 @@ func (o *Orchestrator) SetAutoSwitchedFile(path string) {
 	o.autoSwitchedMu.Unlock()
 }
 
+// quarantineLedgerFile preserves an unreadable ledger file (corrupt, or a
+// version this daemon does not know) as <path>.quarantine before the
+// daemon's next save overwrites it, the way the automation-queue loader
+// does (M3-close BH-M3-7/V3). The daemon then starts from an empty ledger
+// for that file; the quarantined copy is for the operator (or a newer
+// daemon) to recover.
+func (o *Orchestrator) quarantineLedgerFile(path string, data []byte, reason error) {
+	quarantinePath := o.writeQuarantineCopy(path, data)
+	slog.Warn("orchestrator: unreadable ledger file quarantined; starting empty",
+		"path", path, "quarantine", quarantinePath, "error", reason)
+}
+
+// maxQuarantineCopies bounds how many quarantine copies of one state file
+// are kept (CORE-173 c); the oldest beyond it are removed.
+const maxQuarantineCopies = 5
+
+// writeQuarantineCopy saves data as <path>.quarantine.<UTC timestamp> — a
+// new file per quarantine, so a second bad file no longer overwrites the
+// first (CORE-173 c) — and prunes the copies of path down to the newest
+// maxQuarantineCopies. The timestamp sorts lexicographically. Returns the
+// copy's path ("" when it could not be written; the failure is logged).
+func (o *Orchestrator) writeQuarantineCopy(path string, data []byte) string {
+	base := path + ".quarantine." + time.Now().UTC().Format("20060102T150405.000000000Z")
+	quarantinePath := base
+	for i := 1; ; i++ { // same-nanosecond collision: never overwrite
+		if _, err := os.Lstat(quarantinePath); os.IsNotExist(err) {
+			break
+		}
+		quarantinePath = fmt.Sprintf("%s-%d", base, i)
+	}
+	if err := o.writeLedgerFile(quarantinePath, data, 0o600); err != nil {
+		slog.Warn("orchestrator: failed to write quarantine file", "path", quarantinePath, "error", err)
+		return ""
+	}
+	copies, err := filepath.Glob(escapeGlob(path) + ".quarantine.*")
+	if err != nil {
+		return quarantinePath
+	}
+	slices.Sort(copies)
+	for _, old := range copies[:max(0, len(copies)-maxQuarantineCopies)] {
+		if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+			slog.Warn("orchestrator: failed to prune quarantine copy", "path", old, "error", err)
+		}
+	}
+	return quarantinePath
+}
+
+// escapeGlob escapes filepath.Match metacharacters in a literal path.
+func escapeGlob(p string) string {
+	return strings.NewReplacer(`\`, `\\`, "*", `\*`, "?", `\?`, "[", `\[`).Replace(p)
+}
+
 // autoSwitchedRecord is the wire shape persisted to autoSwitchedFile.
 // Profile is required (always set when AutoResume fires); Backend is
 // optional (only set when the rule's SwitchToBackend was non-empty).
@@ -755,12 +852,65 @@ type autoSwitchedRecord struct {
 	Profile    string     `json:"profile"`
 	Backend    string     `json:"backend,omitempty"`
 	SwitchedAt *time.Time `json:"switched_at,omitempty"`
+	// Provenance (CORE-055), additive and optional: a file written before
+	// these existed loads with an empty source, rendered as "unknown".
+	Source      string `json:"source,omitempty"`
+	FromBackend string `json:"from_backend,omitempty"`
+	FromProfile string `json:"from_profile,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	FromKey     string `json:"from_key,omitempty"`
+}
+
+// autoSwitchedFileVersion is the current auto_switched.json envelope
+// version (CORE-052). Version 1 was a flat map[identifier]autoSwitchedRecord.
+const autoSwitchedFileVersion = 2
+
+// autoSwitchedEnvelope is the v2 wire shape of auto_switched.json. The v1
+// file was a flat map whose loader treated EVERY top-level key as an issue,
+// so new top-level keys could not be added to it without becoming phantom
+// issue records; the envelope nests the overrides instead.
+type autoSwitchedEnvelope struct {
+	Version         int                           `json:"version"`
+	Overrides       map[string]autoSwitchedRecord `json:"overrides"`
+	History         map[string][]time.Time        `json:"switch_history"`
+	Cooldowns       map[string]time.Time          `json:"cooldowns"`
+	CapCommentUntil map[string]time.Time          `json:"cap_comment_until"`
+}
+
+// decodeAutoSwitchedFile accepts the v2 envelope and the legacy v1 flat map
+// (no "version" key), which is migrated in memory; the next save rewrites
+// the file in the v2 shape.
+func decodeAutoSwitchedFile(data []byte) (autoSwitchedEnvelope, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return autoSwitchedEnvelope{}, err
+	}
+	if v, ok := probe["version"]; ok {
+		var env autoSwitchedEnvelope
+		if err := json.Unmarshal(v, &env.Version); err == nil {
+			// M3-close V3: only the version this daemon writes is read; a
+			// future (or bogus) version is rejected, not read as v2.
+			if env.Version != autoSwitchedFileVersion {
+				return autoSwitchedEnvelope{}, fmt.Errorf("orchestrator: unsupported auto_switched.json version %d (want %d)", env.Version, autoSwitchedFileVersion)
+			}
+			if err := json.Unmarshal(data, &env); err != nil {
+				return autoSwitchedEnvelope{}, err
+			}
+			return env, nil
+		}
+	}
+	var legacy map[string]autoSwitchedRecord
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return autoSwitchedEnvelope{}, err
+	}
+	return autoSwitchedEnvelope{Version: 1, Overrides: legacy}, nil
 }
 
 // loadAutoSwitchedFromDisk reads the auto-switched file and pre-populates
-// state.IssueProfiles, state.IssueBackends, and state.AutoSwitchedIdentifiers.
-// Called once at startup. Errors are logged and swallowed; a missing or
-// malformed file should not block daemon startup.
+// state.IssueProfiles, state.IssueBackends, state.AutoSwitchedIdentifiers,
+// state.AutoSwitchedAt and the switch bookkeeping (CORE-052). Called once at
+// startup, before the event loop's first select. Errors are logged and
+// swallowed; a missing or malformed file should not block daemon startup.
 func (o *Orchestrator) loadAutoSwitchedFromDisk(state State) State {
 	o.autoSwitchedMu.RLock()
 	path := o.autoSwitchedFile
@@ -775,11 +925,23 @@ func (o *Orchestrator) loadAutoSwitchedFromDisk(state State) State {
 		}
 		return state
 	}
-	var records map[string]autoSwitchedRecord
-	if err := json.Unmarshal(data, &records); err != nil {
-		slog.Warn("orchestrator: failed to parse auto-switched file", "path", path, "error", err)
+	env, err := decodeAutoSwitchedFile(data)
+	if err != nil {
+		// BH-M3-7: keep the unreadable file before the next save overwrites it.
+		o.quarantineLedgerFile(path, data, err)
 		return state
 	}
+	o.applyAutoSwitchedEnvelope(&state, env, time.Now())
+	slog.Info("orchestrator: loaded auto-switched overrides", "path", path,
+		"count", len(env.Overrides), "file_version", env.Version,
+		"switch_history", len(state.SwitchHistory), "cooldowns", len(state.RateLimitCooldowns))
+	return state
+}
+
+// applyAutoSwitchedEnvelope merges a decoded file into state, pruning
+// switch stamps older than the switch window and expired cooldown and
+// cap-comment entries (they can no longer affect a decision).
+func (o *Orchestrator) applyAutoSwitchedEnvelope(state *State, env autoSwitchedEnvelope, now time.Time) {
 	if state.IssueProfiles == nil {
 		state.IssueProfiles = make(map[string]string)
 	}
@@ -792,7 +954,7 @@ func (o *Orchestrator) loadAutoSwitchedFromDisk(state State) State {
 	if state.AutoSwitchedAt == nil {
 		state.AutoSwitchedAt = make(map[string]time.Time)
 	}
-	for id, rec := range records {
+	for id, rec := range env.Overrides {
 		state.IssueProfiles[id] = rec.Profile
 		if rec.Backend != "" {
 			state.IssueBackends[id] = rec.Backend
@@ -801,52 +963,190 @@ func (o *Orchestrator) loadAutoSwitchedFromDisk(state State) State {
 		if rec.SwitchedAt != nil && !rec.SwitchedAt.IsZero() {
 			state.AutoSwitchedAt[id] = *rec.SwitchedAt
 		}
+		if rec.Source != "" {
+			if state.AutoSwitchInfo == nil {
+				state.AutoSwitchInfo = make(map[string]AutoSwitchRecord)
+			}
+			info := AutoSwitchRecord{
+				Source: rec.Source, FromBackend: rec.FromBackend, FromProfile: rec.FromProfile,
+				ToBackend: rec.Backend, ToProfile: rec.Profile, Reason: rec.Reason, FromKey: rec.FromKey,
+			}
+			if rec.SwitchedAt != nil {
+				info.SwitchedAt = *rec.SwitchedAt
+			}
+			state.AutoSwitchInfo[id] = info
+		}
 	}
-	slog.Info("orchestrator: loaded auto-switched overrides", "path", path, "count", len(records))
-	return state
+	windowStart := now.Add(-o.rateLimitSwitchWindowDuration())
+	for issueID, stamps := range env.History {
+		var kept []time.Time
+		for _, t := range stamps {
+			if !t.Before(windowStart) {
+				kept = append(kept, t)
+			}
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		if state.SwitchHistory == nil {
+			state.SwitchHistory = make(map[string][]time.Time)
+		}
+		state.SwitchHistory[issueID] = kept
+	}
+	for key, until := range env.Cooldowns {
+		if !until.After(now) {
+			continue
+		}
+		if state.RateLimitCooldowns == nil {
+			state.RateLimitCooldowns = make(map[string]time.Time)
+		}
+		state.RateLimitCooldowns[key] = until
+	}
+	for issueID, until := range env.CapCommentUntil {
+		if !until.After(now) {
+			continue
+		}
+		if state.RateLimitCapCommentUntil == nil {
+			state.RateLimitCapCommentUntil = make(map[string]time.Time)
+		}
+		state.RateLimitCapCommentUntil[issueID] = until
+	}
 }
 
-// saveAutoSwitchedToDisk writes the current auto-switched overrides to disk.
-// Must NOT be called with snapMu held. Called from the event loop after
-// any mutation to AutoSwitchedIdentifiers (auto-switch fire OR clear-on-success).
-// The arg maps are clones provided by the caller; we never read live state
-// from this goroutine to avoid races.
-func (o *Orchestrator) saveAutoSwitchedToDisk(
-	autoSwitched map[string]struct{},
-	profiles map[string]string,
-	backends map[string]string,
-	switchedAt map[string]time.Time,
-) {
+// saveAutoSwitchedToDisk writes the auto-switched overrides and the switch
+// bookkeeping to disk as the v2 envelope. Called from the event loop after
+// any mutation to either (auto-switch fire, clear-on-success, revert, a
+// recorded switch / cooldown / cap-comment claim, a pruning tick). It
+// marshals from state on the calling (event-loop) goroutine and hands only
+// bytes to the ordered, dirty-checked ledger writer (CORE-038), so an
+// unchanged file costs no write.
+func (o *Orchestrator) saveAutoSwitchedToDisk(state *State) {
 	o.autoSwitchedMu.RLock()
 	path := o.autoSwitchedFile
 	o.autoSwitchedMu.RUnlock()
-	if path == "" {
+	if path == "" || state == nil {
 		return
 	}
-	records := make(map[string]autoSwitchedRecord, len(autoSwitched))
-	for id := range autoSwitched {
-		rec := autoSwitchedRecord{Profile: profiles[id]}
-		if b, ok := backends[id]; ok {
+	env := autoSwitchedEnvelope{
+		Version:         autoSwitchedFileVersion,
+		Overrides:       make(map[string]autoSwitchedRecord, len(state.AutoSwitchedIdentifiers)),
+		History:         make(map[string][]time.Time, len(state.SwitchHistory)),
+		Cooldowns:       make(map[string]time.Time, len(state.RateLimitCooldowns)),
+		CapCommentUntil: make(map[string]time.Time, len(state.RateLimitCapCommentUntil)),
+	}
+	for id := range state.AutoSwitchedIdentifiers {
+		rec := autoSwitchedRecord{Profile: state.IssueProfiles[id]}
+		if b, ok := state.IssueBackends[id]; ok {
 			rec.Backend = b
 		}
-		if t, ok := switchedAt[id]; ok && !t.IsZero() {
+		if t, ok := state.AutoSwitchedAt[id]; ok && !t.IsZero() {
 			t = t.UTC()
 			rec.SwitchedAt = &t
 		}
-		records[id] = rec
+		if info, ok := state.AutoSwitchInfo[id]; ok {
+			rec.Source, rec.FromBackend, rec.FromProfile = info.Source, info.FromBackend, info.FromProfile
+			rec.Reason, rec.FromKey = info.Reason, info.FromKey
+		}
+		env.Overrides[id] = rec
 	}
-	data, err := json.Marshal(records)
+	for id, stamps := range state.SwitchHistory {
+		utc := make([]time.Time, len(stamps))
+		for i, t := range stamps {
+			utc[i] = t.UTC()
+		}
+		env.History[id] = utc
+	}
+	for k, t := range state.RateLimitCooldowns {
+		env.Cooldowns[k] = t.UTC()
+	}
+	for k, t := range state.RateLimitCapCommentUntil {
+		env.CapCommentUntil[k] = t.UTC()
+	}
+	data, err := json.Marshal(env)
 	if err != nil {
 		slog.Warn("orchestrator: failed to marshal auto-switched overrides", "error", err)
 		return
 	}
-	if err := writeFileAtomically(path, data, 0o644); err != nil {
-		slog.Warn("orchestrator: failed to write auto-switched file", "path", path, "error", err)
-	}
+	o.persistLedger(ledgerAutoSwitched, path, data, 0o644)
 }
 
-// savePausedToDisk writes PausedIdentifiers to disk in the new map format
-// {"identifier": "issueUUID"}. Must NOT be called with snapMu held.
+func pauseReasonsPath(pausedFile string) string {
+	if pausedFile == "" {
+		return ""
+	}
+	return pausedFile + ".reasons.json"
+}
+
+// savePauseReasonsToDisk persists why each identifier is paused. Failure is
+// logged, not fatal: a lost reason degrades diagnostics, never correctness —
+// the pause itself lives in the paused file.
+func (o *Orchestrator) savePauseReasonsToDisk(reasons map[string]string) {
+	o.pausedMu.RLock()
+	path := pauseReasonsPath(o.pausedFile)
+	o.pausedMu.RUnlock()
+	if path == "" {
+		return
+	}
+	// storeSnap runs on every event-loop turn, and each save is an atomic
+	// write (temp + fsync + rename). Almost every daemon has no paused issues
+	// at all, so skip the write entirely when there is nothing to record AND
+	// no stale file to clear — otherwise this costs a file write per turn to
+	// persist an empty map.
+	//
+	// The "no stale file" half is load-bearing: when the last pause is
+	// cleared the map goes empty and the file MUST be rewritten, or a
+	// restart would resurrect reasons for issues that are no longer paused.
+	//
+	// CORE-038: the stat only matters before this process has submitted any
+	// reasons. Once it has, the ledger's dirty check decides — and must: an
+	// earlier non-empty version may still be pending (not yet on disk), so
+	// "no file yet" no longer implies "nothing stale to clear".
+	if len(reasons) == 0 && !o.ledger(ledgerPauseReasons).hasSubmitted() {
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			return
+		}
+	}
+	data, err := json.Marshal(reasons)
+	if err != nil {
+		slog.Warn("orchestrator: failed to marshal pause reasons", "error", err)
+		return
+	}
+	o.persistLedger(ledgerPauseReasons, path, data, 0o644)
+}
+
+// loadPauseReasonsFromDisk restores pause reasons, dropping any whose
+// identifier is no longer paused so the map cannot outlive its pauses.
+func (o *Orchestrator) loadPauseReasonsFromDisk(state State) State {
+	o.pausedMu.RLock()
+	path := pauseReasonsPath(o.pausedFile)
+	o.pausedMu.RUnlock()
+	if path == "" {
+		return state
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // daemon-controlled path
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("orchestrator: failed to load pause reasons file", "path", path, "error", err)
+		}
+		return state
+	}
+	var reasons map[string]string
+	if err := json.Unmarshal(data, &reasons); err != nil {
+		slog.Warn("orchestrator: failed to parse pause reasons file, continuing without reasons",
+			"path", path, "error", err)
+		return state
+	}
+	if state.PauseReasons == nil {
+		state.PauseReasons = make(map[string]string, len(reasons))
+	}
+	for ident, reason := range reasons {
+		if _, stillPaused := state.PausedIdentifiers[ident]; stillPaused {
+			state.PauseReasons[ident] = reason
+		}
+	}
+	return state
+}
+
 func (o *Orchestrator) savePausedToDisk(paused map[string]string) {
 	o.pausedMu.RLock()
 	path := o.pausedFile
@@ -859,9 +1159,7 @@ func (o *Orchestrator) savePausedToDisk(paused map[string]string) {
 		slog.Warn("orchestrator: failed to marshal paused identifiers", "error", err)
 		return
 	}
-	if err := writeFileAtomically(path, data, 0o644); err != nil {
-		slog.Warn("orchestrator: failed to write paused file", "path", path, "error", err)
-	}
+	o.persistLedger(ledgerPaused, path, data, 0o644)
 }
 
 // RunHistory returns a snapshot of recently completed runs (newest last).
@@ -878,37 +1176,87 @@ func (o *Orchestrator) storeSnap(s State) {
 	// The event loop mutates state.* maps without holding snapMu (they are its
 	// private data). External goroutines read lastSnap.* under snapMu. Sharing
 	// the same underlying maps would be a data race; separate copies prevent it.
-	snap := s
-	snap.Running = copyRunningMap(s.Running)
-	snap.Claimed = maps.Clone(s.Claimed)
-	snap.RetryAttempts = copyRetryMap(s.RetryAttempts)
-	snap.PausedIdentifiers = maps.Clone(s.PausedIdentifiers)
-	snap.PausedSessions = maps.Clone(s.PausedSessions)
-	snap.IssueProfiles = maps.Clone(s.IssueProfiles)
-	snap.IssueBackends = maps.Clone(s.IssueBackends)
-	snap.ForceReanalyze = maps.Clone(s.ForceReanalyze)
-	snap.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
-	snap.PrevIssueStates = maps.Clone(s.PrevIssueStates)
-	snap.IssueStatusHistory = copyIssueStatusHistoryMap(s.IssueStatusHistory)
-	snap.DiscardingIdentifiers = maps.Clone(s.DiscardingIdentifiers)
-	snap.AutoSwitchedIdentifiers = maps.Clone(s.AutoSwitchedIdentifiers)
-	snap.AutoSwitchedAt = maps.Clone(s.AutoSwitchedAt)
-	snap.InputRequiredIssues = maps.Clone(s.InputRequiredIssues)
-	snap.PendingInputResumes = maps.Clone(s.PendingInputResumes)
-	snap.AutomationQueue = copyAutomationQueueMap(s.AutomationQueue)
-	snap.AutomationQueueOrder = append([]string(nil), s.AutomationQueueOrder...)
-	snap.DependencyAudit = copyDependencyAuditMap(s.DependencyAudit)
-	snap.PROpenedDispatched = maps.Clone(s.PROpenedDispatched)
-	snap.PRMergedDispatched = maps.Clone(s.PRMergedDispatched)
+	snap := s.Clone()
 
 	o.snapMu.Lock()
 	o.lastSnap = snap
 	o.snapMu.Unlock()
 
 	o.savePausedToDisk(snap.PausedIdentifiers)
+	// Reasons persist alongside the pauses they explain, from the SAME place.
+	// Persisting only at the individual pause sites missed the one that
+	// matters most: the transition-failed reason is set in the worker-exit
+	// handler, which has no savePaused call of its own, so the reason was
+	// recorded in memory and lost on restart — leaving a recoverable pause
+	// indistinguishable from a user cancel again, which is the whole point of
+	// #42-F. Persisting here covers every pause site by construction.
+	o.savePauseReasonsToDisk(snap.PauseReasons)
 	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes)
 	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure, snap.DependencyAudit, snap.DependencyTransitionSeq)
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}
+}
+
+// copyInputRequiredMap deep-copies the input-required queue.
+//
+// maps.Clone is a SHALLOW clone: on a map of pointers it duplicates the map
+// but shares every *InputRequiredEntry with the event loop. That was
+// harmless while the loop only ever inserted and deleted whole entries, and
+// became a data race the moment checkTrackerReplies started stamping
+// LastReplyCheckAt in place on the entry it had just selected — a race
+// reproduced against Snapshot's clone. Copying the struct value keeps
+// CLAUDE.md's rule that a snapshot handed to HTTP handler goroutines shares
+// nothing mutable with the loop.
+func copyInputRequiredMap(m map[string]*InputRequiredEntry) map[string]*InputRequiredEntry {
+	cp := make(map[string]*InputRequiredEntry, len(m))
+	for k, v := range m {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		e := *v // copy struct value; InputRequiredEntry has no reference fields
+		cp[k] = &e
+	}
+	return cp
+}
+
+// copyPendingInputResumeMap deep-copies the pending-resume queue, for the
+// same reason as copyInputRequiredMap. No field on it is mutated in place
+// today, but it is the same pointer-map shape reached by the same snapshot
+// path, and the next in-place write would be the same silent race.
+func copyPendingInputResumeMap(m map[string]*PendingInputResumeEntry) map[string]*PendingInputResumeEntry {
+	cp := make(map[string]*PendingInputResumeEntry, len(m))
+	for k, v := range m {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		e := *v
+		cp[k] = &e
+	}
+	return cp
+}
+
+// formatOptionalTime renders t for disk, mapping the zero value to "" so a
+// never-set timestamp round-trips as never-set rather than as year 1.
+func formatOptionalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+// parseOptionalTime is formatOptionalTime's inverse. An empty or unparseable
+// value yields the zero time, which sorts first — a never-checked entry gets
+// priority, the safe direction for a fairness key.
+func parseOptionalTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }

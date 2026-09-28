@@ -2,12 +2,15 @@ import { useState, useMemo } from 'react';
 import Badge from '../../../components/ui/badge/Badge';
 import type { TrackerIssue, ProfileDef } from '../../../types/schemas';
 import { useCancelIssue, useResumeIssue } from '../../../queries/issues';
+import { useItervoxStore } from '../../../store/itervoxStore';
+import { EMPTY_STATES } from '../../../utils/constants';
 import {
   orchDotClass,
   stateBadgeColor,
   EMPTY_PROFILE_LABEL,
   formatOrchestratorState,
 } from '../../../utils/format';
+import { WhyIdleChip } from '../../../components/itervox/WhyIdleChip';
 
 type SortKey = 'identifier' | 'title' | 'state';
 type SortDir = 'asc' | 'desc';
@@ -62,6 +65,13 @@ export function ListView({
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const cancelIssueMutation = useCancelIssue();
   const resumeIssueMutation = useResumeIssue();
+
+  // outbox #54 fast-follow: BoardView's DraggableCard has carried the
+  // "⟳ Syncing" badge since Task 4 — ListView rows had no equivalent
+  // marker (accepted-minor D on the final review). Same join-by-identifier
+  // against snapshot.outboxSyncing as BoardView.
+  const outboxSyncing = useItervoxStore((s) => s.snapshot?.outboxSyncing ?? EMPTY_STATES);
+  const syncingIdentifiers = useMemo(() => new Set(outboxSyncing), [outboxSyncing]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -156,7 +166,7 @@ export function ListView({
                       href={issue.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-theme-accent font-mono text-sm font-medium hover:underline"
+                      className="text-theme-accent-text font-mono text-sm font-medium hover:underline"
                       onClick={(e) => {
                         e.stopPropagation();
                       }}
@@ -171,11 +181,23 @@ export function ListView({
                 </td>
                 <td className="text-theme-text-secondary max-w-xs px-4 py-3">
                   <div className="flex min-w-0 items-center gap-2">
-                    <span className="truncate">{issue.title}</span>
+                    {/* CORE-068: the title is the row's keyboard entry point. */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelect(issue.identifier);
+                      }}
+                      className="text-theme-text-secondary hover:text-theme-text min-w-0 cursor-pointer truncate rounded-sm text-left focus-visible:underline"
+                    >
+                      {issue.title}
+                    </button>
+                    {/* CORE-080 — why this idle issue is not dispatching. */}
+                    <WhyIdleChip reason={issue.ineligibleReason} />
                     {blockerCount(issue) > 0 && (
                       <span
                         title={`Blocked by ${String(blockerCount(issue))} issue${blockerCount(issue) === 1 ? '' : 's'}`}
-                        className="bg-theme-danger-soft text-theme-danger flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                        className="bg-theme-danger-soft text-theme-danger-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
                       >
                         Blocked {blockerCount(issue)}
                       </span>
@@ -183,9 +205,20 @@ export function ListView({
                   </div>
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap">
-                  <Badge size="sm" color={stateBadgeColor(issue.state)}>
-                    {issue.state}
-                  </Badge>
+                  <div className="flex items-center gap-1.5">
+                    <Badge size="sm" color={stateBadgeColor(issue.state)}>
+                      {issue.state}
+                    </Badge>
+                    {syncingIdentifiers.has(issue.identifier) && (
+                      <span
+                        data-testid="issue-row-syncing-badge"
+                        title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
+                        className="flex-shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
+                      >
+                        ⟳ Syncing
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap">
                   {(() => {
@@ -223,7 +256,7 @@ export function ListView({
                           onChange={(e) => {
                             onProfileChange(issue.identifier, e.target.value);
                           }}
-                          className="border-theme-line bg-theme-bg-elevated text-theme-text-secondary rounded border px-1.5 py-0.5 text-xs focus:outline-none"
+                          className="border-theme-line bg-theme-bg-elevated text-theme-text-secondary focus:border-theme-accent rounded border px-1.5 py-0.5 text-xs focus:outline-none"
                         >
                           <option value="">{EMPTY_PROFILE_LABEL}</option>
                           {availableProfiles.map((p) => (
@@ -263,7 +296,7 @@ export function ListView({
                       className="rounded px-2 py-1 text-xs transition-colors"
                       style={{
                         border: '1px solid var(--danger-soft)',
-                        color: 'var(--danger)',
+                        color: 'var(--danger-text)',
                         background: 'transparent',
                       }}
                     >
@@ -278,7 +311,7 @@ export function ListView({
                       className="rounded px-2 py-1 text-xs transition-colors"
                       style={{
                         border: '1px solid var(--success-soft)',
-                        color: 'var(--success)',
+                        color: 'var(--success-text)',
                         background: 'transparent',
                       }}
                     >

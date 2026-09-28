@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { FilterPill } from '../../../components/itervox/FilterPills';
-import { authedFetch } from '../../../auth/authedFetch';
+import { apiRequest } from '../../../auth/apiRequest';
 import { UnauthorizedError } from '../../../auth/UnauthorizedError';
 import { useSettingsActions } from '../../../hooks/useSettingsActions';
 import { useInvalidateIssues } from '../../../queries/issues';
@@ -9,8 +9,10 @@ import { useItervoxStore } from '../../../store/itervoxStore';
 import { useToastStore } from '../../../store/toastStore';
 import { useUIStore } from '../../../store/uiStore';
 import type {
+  DependencyCycleRow,
   DependencyGraphEdge,
   DependencyGraphNode,
+  DepsAnalyzeJob,
   ProfileDef,
   StateSnapshot,
   TrackerIssue,
@@ -33,8 +35,10 @@ interface DashboardIssuesPanelProps {
   defaultBackend?: string;
   dependencyGraphNodes: DependencyGraphNode[];
   dependencyGraphEdges: DependencyGraphEdge[];
+  dependencyCycles?: DependencyCycleRow[];
   depsAnalyzerProfile?: string;
   depsLastAnalyzedAt?: string;
+  depsAnalyzeJob?: DepsAnalyzeJob;
   onIssueSelect: (identifier: string) => void;
   onStateChange: (identifier: string, newState: string) => void;
   onProfileChange: (identifier: string, profile: string) => void;
@@ -54,8 +58,10 @@ export function DashboardIssuesPanel({
   defaultBackend,
   dependencyGraphNodes,
   dependencyGraphEdges,
+  dependencyCycles,
   depsAnalyzerProfile,
   depsLastAnalyzedAt,
+  depsAnalyzeJob,
   onIssueSelect,
   onStateChange,
   onProfileChange,
@@ -115,7 +121,8 @@ export function DashboardIssuesPanel({
   // source of truth.
   const refreshMutation = useMutation({
     mutationFn: async () => {
-      await authedFetch('/api/v1/refresh', { method: 'POST' });
+      // A failed refresh request now reaches onError instead of being ignored.
+      await apiRequest('/api/v1/refresh', { op: 'refresh', method: 'POST' });
       await useItervoxStore.getState().refreshSnapshot();
     },
     onSuccess: () => {
@@ -181,8 +188,10 @@ export function DashboardIssuesPanel({
         defaultBackend={defaultBackend}
         dependencyGraphNodes={dependencyGraphNodes}
         dependencyGraphEdges={dependencyGraphEdges}
+        dependencyCycles={dependencyCycles}
         depsAnalyzerProfile={depsAnalyzerProfile}
         depsLastAnalyzedAt={depsLastAnalyzedAt}
+        depsAnalyzeJob={depsAnalyzeJob}
         onIssueSelect={onIssueSelect}
         onStateChange={onStateChange}
         onProfileChange={onProfileChange}
