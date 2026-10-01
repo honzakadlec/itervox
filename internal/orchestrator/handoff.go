@@ -158,6 +158,16 @@ const synthesizedHandoffHeader = "> **Synthesized handoff** — the agent exited
 	"its handoff deliverable. The orchestrator captured the session summary instead " +
 	"(spec F2: updating shared state is part of the definition of done)."
 
+// handoffWritten reports whether the run's handoff file exists as a non-empty
+// regular file. Empty paths (no workspace) report false.
+func handoffWritten(workspacePath, handoffRelPath string) bool {
+	if workspacePath == "" || handoffRelPath == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(workspacePath, handoffRelPath))
+	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
 // ensureHandoffOnSuccess enforces F2 ("update the shared state MUST be part
 // of the definition of done") on the worker success path: if the run's
 // handoff file is missing or empty, the orchestrator synthesizes one from
@@ -167,10 +177,10 @@ func ensureHandoffOnSuccess(workspacePath, handoffRelPath, sessionSummary string
 	if workspacePath == "" || handoffRelPath == "" {
 		return false, nil
 	}
-	path := filepath.Join(workspacePath, handoffRelPath)
-	if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() && info.Size() > 0 {
+	if handoffWritten(workspacePath, handoffRelPath) {
 		return false, nil // agent wrote its own handoff — done is done
 	}
+	path := filepath.Join(workspacePath, handoffRelPath)
 	body := strings.TrimSpace(sessionSummary)
 	if body == "" {
 		body = "_The agent produced no session summary for this run._"
