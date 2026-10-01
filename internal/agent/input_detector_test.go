@@ -55,6 +55,13 @@ func TestDetectInputRequiredFallback_DoesNotMatchApprovedContinuing(t *testing.T
 	assert.Empty(t, decision.Question)
 }
 
+func TestDetectInputRequiredFallback_DoesNotMatchPostedApprovalNarration(t *testing.T) {
+	decision := agent.DetectInputRequiredFallback(`Review done. PR clean — mechanical opt-in flag add, mirrors existing pattern exact, all call sites updated, build+tests pass. No bugs. Posted approval comment. Handoff written.`)
+
+	assert.False(t, decision.NeedsInput)
+	assert.Empty(t, decision.Question)
+}
+
 func TestDetectInputRequiredFallback_Empty(t *testing.T) {
 	decision := agent.DetectInputRequiredFallback("")
 	assert.False(t, decision.NeedsInput)

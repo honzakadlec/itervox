@@ -41,6 +41,7 @@ import (
 	"github.com/vnovick/itervox/internal/statusui"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
+	"github.com/vnovick/itervox/internal/tracker/gitlab"
 	"github.com/vnovick/itervox/internal/tracker/jira"
 	"github.com/vnovick/itervox/internal/tracker/linear"
 	"github.com/vnovick/itervox/internal/workflow"
@@ -547,6 +548,16 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	tr, err := buildTracker(cfg)
 	if err != nil {
 		return fmt.Errorf("build tracker: %w", err)
+	}
+	// Self-heal: recreate any status::* scoped labels missing from the GitLab
+	// project (e.g. deleted after "itervox init" ran). Best-effort — a failure
+	// here must not block daemon startup.
+	if glClient, ok := tr.(*gitlab.Client); ok {
+		ensureCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := glClient.EnsureStatusLabels(ensureCtx); err != nil {
+			slog.Warn("gitlab: failed to self-heal status labels on startup", "error", err)
+		}
+		cancel()
 	}
 
 	var runner agent.Runner = agent.NewMultiRunner(
@@ -1530,6 +1541,14 @@ func (m *linearProjectManager) GetProjectFilter() []string { return m.pm.GetProj
 
 // buildTracker constructs the correct tracker adapter from config.
 func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
+	tr, err := buildTrackerAdapter(cfg)
+	if err != nil || !cfg.Tracker.SingleComment {
+		return tr, err
+	}
+	return tracker.NewSingleCommentTracker(tr), nil
+}
+
+func buildTrackerAdapter(cfg *config.Config) (tracker.Tracker, error) {
 	switch cfg.Tracker.Kind {
 	case "linear":
 		return linear.NewClient(linear.ClientConfig{
@@ -1550,20 +1569,30 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 		}), nil
 	case "jira":
 		return jira.NewClient(jira.ClientConfig{
-			APIKey:           cfg.Tracker.APIKey,
-			Username:         cfg.Tracker.Username,
-			Endpoint:         cfg.Tracker.Endpoint,
-			ProjectSlug:      cfg.Tracker.ProjectSlug,
-			ActiveStates:     cfg.Tracker.ActiveStates,
-			TerminalStates:   cfg.Tracker.TerminalStates,
-			BacklogStates:    cfg.Tracker.BacklogStates,
-			DefaultIssueType: cfg.Tracker.DefaultIssueType,
+			APIKey:                 cfg.Tracker.APIKey,
+			Username:               cfg.Tracker.Username,
+			Endpoint:               cfg.Tracker.Endpoint,
+			ProjectSlug:            cfg.Tracker.ProjectSlug,
+			ActiveStates:           cfg.Tracker.ActiveStates,
+			TerminalStates:         cfg.Tracker.TerminalStates,
+			BacklogStates:          cfg.Tracker.BacklogStates,
+			DefaultIssueType:       cfg.Tracker.DefaultIssueType,
+			CommentVisibilityGroup: cfg.Tracker.CommentVisibilityGroup,
+		}), nil
+	case "gitlab":
+		return gitlab.NewClient(gitlab.ClientConfig{
+			APIKey:          cfg.Tracker.APIKey,
+			ProjectSlug:     cfg.Tracker.ProjectSlug,
+			ActiveStates:    cfg.Tracker.ActiveStates,
+			TerminalStates:  cfg.Tracker.TerminalStates,
+			BacklogStates:   cfg.Tracker.BacklogStates,
+			CompletionState: cfg.Tracker.CompletionState,
 		}), nil
 	case "memory":
 		issues := tracker.GenerateDemoIssues(10)
 		return tracker.NewMemoryTracker(issues, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates), nil
 	default:
-		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, jira, memory)", cfg.Tracker.Kind)
+		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, jira, gitlab, memory)", cfg.Tracker.Kind)
 	}
 }
 

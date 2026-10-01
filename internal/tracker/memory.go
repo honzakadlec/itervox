@@ -137,6 +137,25 @@ func (m *MemoryTracker) CreateComment(_ context.Context, issueID, body string) (
 	return comment, nil
 }
 
+// UpdateComment replaces the body of an existing in-memory comment.
+func (m *MemoryTracker) UpdateComment(_ context.Context, issueID, commentID, body string) (*domain.Comment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.issues {
+		if m.issues[i].ID != issueID {
+			continue
+		}
+		for j := range m.issues[i].Comments {
+			if m.issues[i].Comments[j].ID == commentID {
+				m.issues[i].Comments[j].Body = body
+				updated := m.issues[i].Comments[j]
+				return &updated, nil
+			}
+		}
+	}
+	return nil, &NotFoundError{Adapter: "memory", Identifier: commentID}
+}
+
 // CreateIssue creates a new in-memory issue for tests and local/demo flows.
 func (m *MemoryTracker) CreateIssue(_ context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
 	m.mu.Lock()

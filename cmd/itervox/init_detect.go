@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,12 +40,13 @@ func scanRepo(dir string) repoInfo {
 
 	if out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output(); err == nil {
 		info.RemoteURL = strings.TrimSpace(string(out))
-		info.Owner, info.Repo = parseGitRemote(info.RemoteURL)
+		var host string
+		host, info.Owner, info.Repo = parseGitRemote(info.RemoteURL)
 		if info.Repo != "" {
 			info.ProjectName = info.Repo
 		}
-		if info.Owner != "" && info.Repo != "" {
-			info.CloneURL = fmt.Sprintf("git@github.com:%s/%s.git", info.Owner, info.Repo)
+		if host != "" && info.Owner != "" && info.Repo != "" {
+			info.CloneURL = fmt.Sprintf("git@%s:%s/%s.git", host, info.Owner, info.Repo)
 		}
 	}
 
@@ -66,14 +68,25 @@ func scanRepo(dir string) repoInfo {
 	return info
 }
 
-// parseGitRemote extracts owner and repo from an SSH or HTTPS git remote URL.
-func parseGitRemote(remote string) (owner, repo string) {
+// parseGitRemote extracts the host, owner, and repo from an SSH or HTTPS git
+// remote URL.
+func parseGitRemote(remote string) (host, owner, repo string) {
 	remote = strings.TrimSuffix(strings.TrimSpace(remote), ".git")
 	if strings.HasPrefix(remote, "git@") {
-		if _, path, ok := strings.Cut(remote, ":"); ok {
+		if hostAndPath, path, ok := strings.Cut(remote, ":"); ok {
+			host = strings.TrimPrefix(hostAndPath, "git@")
 			owner, repo, _ = strings.Cut(path, "/")
 			return
 		}
+	}
+	if u, err := url.Parse(remote); err == nil && u.Host != "" {
+		host = u.Host
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) >= 2 {
+			owner = parts[len(parts)-2]
+			repo = parts[len(parts)-1]
+		}
+		return
 	}
 	parts := strings.Split(remote, "/")
 	if len(parts) >= 2 {

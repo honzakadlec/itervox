@@ -54,19 +54,41 @@ func detectDefaultBranch(ctx context.Context, wsPath string) string {
 
 var prURLRegex = regexp.MustCompile(`https://github\.com/[^/\s]+/[^/\s]+/pull/\d+\b`)
 
-// ParsePRURLs returns all unique GitHub PR URLs found in text, in order of
-// first appearance.
+// mrURLRegex matches GitLab merge request URLs, including subgroup paths
+// (e.g. https://gitlab.com/group/subgroup/project/-/merge_requests/5).
+var mrURLRegex = regexp.MustCompile(`https://gitlab\.com/[\w./-]+/-/merge_requests/\d+\b`)
+
+// isGitLabMRURL reports whether url is a GitLab merge request URL, as
+// opposed to a GitHub PR URL.
+func isGitLabMRURL(url string) bool {
+	return mrURLRegex.MatchString(url)
+}
+
+// ParsePRURLs returns all unique GitHub PR and GitLab MR URLs found in text,
+// in order of first appearance.
 func ParsePRURLs(text string) []string {
-	matches := prURLRegex.FindAllString(text, -1)
+	type match struct {
+		start int
+		url   string
+	}
+	var matches []match
+	for _, loc := range prURLRegex.FindAllStringIndex(text, -1) {
+		matches = append(matches, match{start: loc[0], url: text[loc[0]:loc[1]]})
+	}
+	for _, loc := range mrURLRegex.FindAllStringIndex(text, -1) {
+		matches = append(matches, match{start: loc[0], url: text[loc[0]:loc[1]]})
+	}
 	if len(matches) == 0 {
 		return nil
 	}
+	slices.SortStableFunc(matches, func(a, b match) int { return cmp.Compare(a.start, b.start) })
+
 	seen := make(map[string]struct{}, len(matches))
 	out := make([]string, 0, len(matches))
 	for _, m := range matches {
-		if _, ok := seen[m]; !ok {
-			seen[m] = struct{}{}
-			out = append(out, m)
+		if _, ok := seen[m.url]; !ok {
+			seen[m.url] = struct{}{}
+			out = append(out, m.url)
 		}
 	}
 	return out
@@ -82,11 +104,15 @@ type prViewJSON struct {
 	IsDraft     bool   `json:"isDraft"`
 }
 
-// CheckPR calls `gh pr view <url> --json state,headRefName,body,isDraft`.
-// Returns nil, nil if the PR is merged, closed, or gh fails for any reason.
-// Returns a PRContext with URL, Branch, and Description set if the PR is OPEN
+// CheckPR checks whether url is an open GitHub PR or GitLab MR, dispatching
+// to `gh pr view` or `glab mr view` based on the URL shape.
+// Returns nil, nil if the PR/MR is merged, closed, or the CLI fails for any reason.
+// Returns a PRContext with URL, Branch, and Description set if it is open
 // (including draft PRs, which also report state "OPEN" with isDraft=true).
 func CheckPR(ctx context.Context, url string) (*PRContext, error) {
+	if isGitLabMRURL(url) {
+		return checkGitLabMR(ctx, url)
+	}
 	cmd := exec.CommandContext(ctx, "gh", "pr", "view", url,
 		"--json", "state,headRefName,body,isDraft")
 	out, err := cmd.Output()
@@ -104,6 +130,37 @@ func CheckPR(ctx context.Context, url string) (*PRContext, error) {
 		URL:         url,
 		Branch:      v.HeadRefName,
 		Description: v.Body,
+	}, nil
+}
+
+// mrViewJSON is the JSON shape returned by `glab mr view <url> -F json`.
+// GitLab reports merge request state as "opened", "closed", or "merged"
+// (unlike GitHub's "OPEN"/"CLOSED"/"MERGED").
+type mrViewJSON struct {
+	State        string `json:"state"`
+	SourceBranch string `json:"source_branch"`
+	Description  string `json:"description"`
+}
+
+// checkGitLabMR calls `glab mr view <url> -F json`. Returns nil, nil if the
+// MR is merged, closed, or glab fails for any reason (e.g. not installed).
+func checkGitLabMR(ctx context.Context, url string) (*PRContext, error) {
+	cmd := exec.CommandContext(ctx, "glab", "mr", "view", url, "-F", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, nil //nolint:nilerr // glab failure is non-fatal — fall through to normal flow
+	}
+	var v mrViewJSON
+	if err := json.Unmarshal(out, &v); err != nil {
+		return nil, nil //nolint:nilerr
+	}
+	if v.State != "opened" {
+		return nil, nil
+	}
+	return &PRContext{
+		URL:         url,
+		Branch:      v.SourceBranch,
+		Description: v.Description,
 	}, nil
 }
 
@@ -132,22 +189,27 @@ type prReviewsJSON struct {
 // therefore expect ReviewComments to be empty unless a reviewer explicitly
 // submitted a formal review with a non-empty top-level body.
 func FetchPRContext(ctx context.Context, pr *PRContext, wsPath, baseBranch string) {
-	// Fetch review comments.
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", pr.URL,
-		"--json", "reviews")
-	if out, err := cmd.Output(); err == nil {
-		var v prReviewsJSON
-		if err := json.Unmarshal(out, &v); err != nil {
-			slog.Debug("prdetector: failed to parse gh pr view reviews JSON", "url", pr.URL, "error", err)
-		} else {
-			for _, r := range v.Reviews {
-				if strings.TrimSpace(r.Body) == "" {
-					continue
+	// Fetch review comments. GitLab MRs have no equivalent enrichment here yet
+	// (glab has no single-call analog to `gh pr view --json reviews`) —
+	// ReviewComments stays empty for GitLab; DiffStat/FullDiff below are
+	// host-agnostic (local git) and still populate normally.
+	if !isGitLabMRURL(pr.URL) {
+		cmd := exec.CommandContext(ctx, "gh", "pr", "view", pr.URL,
+			"--json", "reviews")
+		if out, err := cmd.Output(); err == nil {
+			var v prReviewsJSON
+			if err := json.Unmarshal(out, &v); err != nil {
+				slog.Debug("prdetector: failed to parse gh pr view reviews JSON", "url", pr.URL, "error", err)
+			} else {
+				for _, r := range v.Reviews {
+					if strings.TrimSpace(r.Body) == "" {
+						continue
+					}
+					pr.ReviewComments = append(pr.ReviewComments, ReviewComment{
+						Body:   r.Body,
+						Author: r.Author.Login,
+					})
 				}
-				pr.ReviewComments = append(pr.ReviewComments, ReviewComment{
-					Body:   r.Body,
-					Author: r.Author.Login,
-				})
 			}
 		}
 	}

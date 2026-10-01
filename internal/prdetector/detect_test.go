@@ -79,6 +79,83 @@ func TestCheckPR_GhFailureReturnsNilNil(t *testing.T) {
 	assert.Nil(t, pr)
 }
 
+func TestParsePRURLs_FindsGitLabMRURLs(t *testing.T) {
+	text := `See https://gitlab.com/group/project/-/merge_requests/5 for context.`
+	urls := prdetector.ParsePRURLs(text)
+	assert.Equal(t, []string{"https://gitlab.com/group/project/-/merge_requests/5"}, urls)
+}
+
+func TestParsePRURLs_FindsGitLabMRURLsWithSubgroup(t *testing.T) {
+	text := `https://gitlab.com/group/subgroup/project/-/merge_requests/12`
+	urls := prdetector.ParsePRURLs(text)
+	assert.Equal(t, []string{"https://gitlab.com/group/subgroup/project/-/merge_requests/12"}, urls)
+}
+
+func TestParsePRURLs_MixedGitHubAndGitLabInAppearanceOrder(t *testing.T) {
+	text := "First https://gitlab.com/g/p/-/merge_requests/1 then https://github.com/org/repo/pull/2"
+	urls := prdetector.ParsePRURLs(text)
+	assert.Equal(t, []string{
+		"https://gitlab.com/g/p/-/merge_requests/1",
+		"https://github.com/org/repo/pull/2",
+	}, urls)
+}
+
+// fakeGlab writes a shell script that prints output and exits 0, returns its path.
+func fakeGlab(t *testing.T, output string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "glab")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' '%s'\n", output)
+	require.NoError(t, os.WriteFile(p, []byte(script), 0o755))
+	return p
+}
+
+func TestCheckPR_GitLabOpenMR(t *testing.T) {
+	out := `{"state":"opened","source_branch":"fix/my-branch","description":"Fixes the bug"}`
+	glabPath := fakeGlab(t, out)
+	t.Setenv("PATH", filepath.Dir(glabPath)+":"+os.Getenv("PATH"))
+
+	pr, err := prdetector.CheckPR(context.Background(), "https://gitlab.com/group/project/-/merge_requests/5")
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "fix/my-branch", pr.Branch)
+	assert.Equal(t, "https://gitlab.com/group/project/-/merge_requests/5", pr.URL)
+}
+
+func TestCheckPR_GitLabMergedReturnsNil(t *testing.T) {
+	out := `{"state":"merged","source_branch":"fix/x","description":""}`
+	glabPath := fakeGlab(t, out)
+	t.Setenv("PATH", filepath.Dir(glabPath)+":"+os.Getenv("PATH"))
+
+	pr, err := prdetector.CheckPR(context.Background(), "https://gitlab.com/group/project/-/merge_requests/1")
+	require.NoError(t, err)
+	assert.Nil(t, pr)
+}
+
+func TestCheckPR_GlabFailureReturnsNilNil(t *testing.T) {
+	dir := t.TempDir()
+	glabPath := filepath.Join(dir, "glab")
+	require.NoError(t, os.WriteFile(glabPath, []byte("#!/bin/sh\nexit 1\n"), 0o755))
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	pr, err := prdetector.CheckPR(context.Background(), "https://gitlab.com/group/project/-/merge_requests/1")
+	assert.NoError(t, err)
+	assert.Nil(t, pr)
+}
+
+func TestDetect_FindsOpenGitLabMR(t *testing.T) {
+	out := `{"state":"opened","source_branch":"fix/eng-1","description":"Fixes ENG-1"}`
+	glabPath := fakeGlab(t, out)
+	t.Setenv("PATH", filepath.Dir(glabPath)+":"+os.Getenv("PATH"))
+
+	url := "https://gitlab.com/org/repo/-/merge_requests/10"
+	issue := domain.Issue{ID: "ENG-1", Description: &url}
+	pr, err := prdetector.Detect(context.Background(), issue)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "fix/eng-1", pr.Branch)
+}
+
 func TestDetect_FindsOpenPR(t *testing.T) {
 	out := `{"state":"OPEN","headRefName":"fix/eng-1","body":"Fixes ENG-1"}`
 	ghPath := fakeGH(t, out)

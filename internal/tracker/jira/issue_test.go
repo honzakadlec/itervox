@@ -215,3 +215,67 @@ func TestCreateIssueWithStateNameTransitions(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, transitioned)
 }
+
+func TestUpdateCommentPutsADFBody(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment/555", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPut, r.Method)
+		reqBody := decodeBody(t, r)
+		body, _ := reqBody["body"].(map[string]any)
+		assert.Equal(t, "doc", body["type"])
+		writeJSON(w, 200, map[string]any{
+			"id":      "555",
+			"author":  map[string]any{"displayName": "Bot", "accountId": "abc"},
+			"created": "2024-06-01T10:15:00.000+0000",
+		})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := jiraclient.NewClient(defaultConfig(ts.URL))
+	comment, err := client.UpdateComment(context.Background(), "PROJ-1", "555", "edited")
+	require.NoError(t, err)
+	assert.Equal(t, "555", comment.ID)
+	assert.Equal(t, "edited", comment.Body)
+	assert.Equal(t, "Bot", comment.AuthorName)
+}
+
+func TestCommentVisibilityGroupSentOnCreateAndUpdate(t *testing.T) {
+	var seen []any
+	record := func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, decodeBody(t, r)["visibility"])
+		writeJSON(w, 200, map[string]any{"id": "555"})
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment", record)
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment/555", record)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cfg := defaultConfig(ts.URL)
+	cfg.CommentVisibilityGroup = "DB INTERNAL"
+	client := jiraclient.NewClient(cfg)
+	_, err := client.CreateComment(context.Background(), "PROJ-1", "hello")
+	require.NoError(t, err)
+	_, err = client.UpdateComment(context.Background(), "PROJ-1", "555", "hello again")
+	require.NoError(t, err)
+
+	want := map[string]any{"type": "group", "value": "DB INTERNAL"}
+	require.Len(t, seen, 2)
+	assert.Equal(t, want, seen[0])
+	assert.Equal(t, want, seen[1])
+}
+
+func TestCommentVisibilityOmittedByDefault(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment", func(w http.ResponseWriter, r *http.Request) {
+		_, ok := decodeBody(t, r)["visibility"]
+		assert.False(t, ok)
+		writeJSON(w, 201, map[string]any{"id": "1"})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	_, err := jiraclient.NewClient(defaultConfig(ts.URL)).CreateComment(context.Background(), "PROJ-1", "hello")
+	require.NoError(t, err)
+}

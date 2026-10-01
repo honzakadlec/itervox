@@ -20,6 +20,7 @@ var supportedTrackerKinds = map[string]bool{
 	"linear": true,
 	"github": true,
 	"jira":   true,
+	"gitlab": true,
 	"memory": true,
 }
 
@@ -157,10 +158,10 @@ func ValidateDispatch(cfg *Config) error {
 
 	// Check 1: tracker.kind present and supported
 	if cfg.Tracker.Kind == "" {
-		return fmt.Errorf("missing tracker.kind: must be one of: linear, github, jira")
+		return fmt.Errorf("missing tracker.kind: must be one of: linear, github, jira, gitlab")
 	}
 	if !supportedTrackerKinds[cfg.Tracker.Kind] {
-		return fmt.Errorf("unsupported_tracker_kind: %q (must be linear, github, or jira)", cfg.Tracker.Kind)
+		return fmt.Errorf("unsupported_tracker_kind: %q (must be linear, github, jira, or gitlab)", cfg.Tracker.Kind)
 	}
 
 	// Check 3: tracker.api_key present after $VAR resolution.
@@ -170,9 +171,9 @@ func ValidateDispatch(cfg *Config) error {
 		return fmt.Errorf("missing tracker.api_key: must be set or resolved from $VAR")
 	}
 
-	// Check 4: tracker.project_slug present (required for GitHub and Jira; optional for Linear)
-	if (cfg.Tracker.Kind == "github" || cfg.Tracker.Kind == "jira") && cfg.Tracker.ProjectSlug == "" {
-		return fmt.Errorf("missing tracker.project_slug: required for GitHub (owner/repo) and Jira (project key)")
+	// Check 4: tracker.project_slug present (required for GitHub, Jira, and GitLab; optional for Linear)
+	if (cfg.Tracker.Kind == "github" || cfg.Tracker.Kind == "jira" || cfg.Tracker.Kind == "gitlab") && cfg.Tracker.ProjectSlug == "" {
+		return fmt.Errorf("missing tracker.project_slug: required for GitHub (owner/repo), Jira (project key), and GitLab (namespace/project)")
 	}
 
 	// Check 4b: tracker.username present for Jira (paired with api_key for HTTP Basic auth).

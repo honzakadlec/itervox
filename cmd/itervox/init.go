@@ -34,6 +34,8 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		b.WriteString("  api_key: $JIRA_API_TOKEN          # export JIRA_API_TOKEN=... (Atlassian API token, not your password)\n")
 		b.WriteString("  username: you@example.com         # Atlassian account email paired with the API token\n")
 		b.WriteString("  endpoint: https://yourdomain.atlassian.net\n")
+	case "gitlab":
+		b.WriteString("  api_key: $GITLAB_TOKEN            # export GITLAB_TOKEN=glpat-... (Personal Access Token, scope: api)\n")
 	}
 
 	slug := "owner/repo"
@@ -62,6 +64,20 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
 		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown in TUI (b) and Kanban; not auto-dispatched.\n")
 		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
+	} else if trackerKind == "gitlab" {
+		b.WriteString("  project_slug: " + slug + "        # GitLab project path (namespace/project); gitlab.com only.\n")
+		b.WriteString("  # GitLab uses scoped labels (status::<state>) to map states. Itervox\n")
+		b.WriteString("  # auto-creates any missing status::* labels on init and daemon startup —\n")
+		b.WriteString("  # no manual label setup required.\n")
+		b.WriteString("  active_states: [\"todo\", \"in-progress\"]\n")
+		b.WriteString("  terminal_states: [\"done\", \"cancelled\"]\n")
+		b.WriteString("  working_state: \"in-progress\"    # status::in-progress applied when an agent starts.\n")
+		b.WriteString("  #                                 # Set to \"\" to disable, or reuse an active label.\n")
+		b.WriteString("  completion_state: \"done\"         # status::done applied when the agent finishes;\n")
+		b.WriteString("  #                                 # also natively closes the GitLab issue.\n")
+		b.WriteString("  # backlog_states: [\"backlog\"]    # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  # failed_state: \"backlog\"        # Label for issues that exhaust all retries.\n")
+		b.WriteString("  #                                 # (stays open — only completion_state auto-closes.)\n")
 	} else {
 		b.WriteString("  project_slug: " + slug + "\n")
 		b.WriteString("  # GitHub uses labels to map states. Labels must exist in your repo.\n")
@@ -294,13 +310,23 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	}
 	b.WriteString("```\n\n---\n\n")
 
-	b.WriteString("## Step 5 — Commit and open PR\n\n")
-	b.WriteString("```bash\n")
-	b.WriteString("git add <specific files>\n")
-	b.WriteString("git commit -m \"feat: <description> ({{ issue.identifier }})\"\n")
-	b.WriteString("git push -u origin HEAD\n")
-	b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
-	b.WriteString("```\n\n---\n\n")
+	if trackerKind == "gitlab" {
+		b.WriteString("## Step 5 — Commit and open MR\n\n")
+		b.WriteString("```bash\n")
+		b.WriteString("git add <specific files>\n")
+		b.WriteString("git commit -m \"feat: <description> ({{ issue.identifier }})\"\n")
+		b.WriteString("git push -u origin HEAD\n")
+		b.WriteString("glab mr create --title \"<title> ({{ issue.identifier }})\" --description \"Closes {{ issue.url }}\"\n")
+		b.WriteString("```\n\n---\n\n")
+	} else {
+		b.WriteString("## Step 5 — Commit and open PR\n\n")
+		b.WriteString("```bash\n")
+		b.WriteString("git add <specific files>\n")
+		b.WriteString("git commit -m \"feat: <description> ({{ issue.identifier }})\"\n")
+		b.WriteString("git push -u origin HEAD\n")
+		b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
+		b.WriteString("```\n\n---\n\n")
+	}
 
 	b.WriteString("## Step 6 — Post PR link to tracker\n\n")
 	b.WriteString("After the PR is open, post its URL as a comment on the tracker issue so it is visible in ")
@@ -321,6 +347,12 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		b.WriteString("  -u \"$JIRA_USERNAME:$JIRA_API_TOKEN\" \\\n")
 		b.WriteString("  -H \"Content-Type: application/json\" \\\n")
 		b.WriteString("  -d \"{\\\"body\\\":{\\\"type\\\":\\\"doc\\\",\\\"version\\\":1,\\\"content\\\":[{\\\"type\\\":\\\"paragraph\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"PR: ${PR_URL}\\\"}]}]}}\"\n")
+		b.WriteString("```\n\n---\n\n")
+	} else if trackerKind == "gitlab" {
+		b.WriteString("GitLab:\n\n")
+		b.WriteString("```bash\n")
+		b.WriteString("MR_URL=$(glab mr view -F json | jq -r .web_url)\n")
+		b.WriteString("glab issue note {{ issue.identifier | remove: \"#\" }} --message \"Opened MR: ${MR_URL}\"\n")
 		b.WriteString("```\n\n---\n\n")
 	} else {
 		b.WriteString("GitHub:\n\n")
@@ -350,7 +382,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 // generates a WORKFLOW.md pre-filled with discovered values.
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	trackerKind := fs.String("tracker", "", "tracker kind: linear, github, or jira (required)")
+	trackerKind := fs.String("tracker", "", "tracker kind: linear, github, jira, or gitlab (required)")
 	runner := fs.String("runner", "claude", "default runner backend: claude or codex")
 	output := fs.String("output", "WORKFLOW.md", "output file path")
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "workflow path for --update")
@@ -413,14 +445,14 @@ func runInit(args []string) {
 	}
 
 	switch *trackerKind {
-	case "linear", "github", "jira":
+	case "linear", "github", "jira", "gitlab":
 		// valid
 	case "":
-		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear, github, or jira)")
+		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear, github, jira, or gitlab)")
 		fs.Usage()
 		fatalExit(1)
 	default:
-		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github, jira)\n", *trackerKind)
+		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github, jira, gitlab)\n", *trackerKind)
 		fatalExit(1)
 	}
 
@@ -512,6 +544,8 @@ func runInit(args []string) {
 			envContent = "# Itervox environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nLINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
 		case "github":
 			envContent = "# Itervox environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nGITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+		case "gitlab":
+			envContent = "# Itervox environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nGITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx\n"
 		}
 		if err := os.WriteFile(envPath, []byte(envContent), 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", envPath, err)

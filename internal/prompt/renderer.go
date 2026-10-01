@@ -26,6 +26,13 @@ var liquidEngine = func() *liquid.Engine {
 // Render renders a Liquid template with issue and attempt variables.
 // Returns template_parse_error on bad syntax, template_render_error on unknown vars/filters.
 func Render(tmpl string, issue domain.Issue, attempt *int) (string, error) {
+	return RenderWithBindings(tmpl, issue, attempt, nil)
+}
+
+// RenderWithBindings renders a Liquid template with the standard issue/attempt
+// variables plus optional extra top-level bindings (e.g. "workspace").
+// Returns template_parse_error on bad syntax, template_render_error on unknown vars/filters.
+func RenderWithBindings(tmpl string, issue domain.Issue, attempt *int, extra map[string]any) (string, error) {
 	if strings.TrimSpace(tmpl) == "" {
 		return DefaultPrompt, nil
 	}
@@ -38,6 +45,9 @@ func Render(tmpl string, issue domain.Issue, attempt *int) (string, error) {
 	bindings := map[string]any{
 		"issue":   issueToMap(issue),
 		"attempt": attemptValue(attempt),
+	}
+	for key, value := range extra {
+		bindings[key] = value
 	}
 
 	out, err := tpl.Render(bindings)

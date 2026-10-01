@@ -284,6 +284,32 @@ func TestAllowUncheckedMergeDefaultsFalse(t *testing.T) {
 	assert.False(t, cfg.Agent.AllowUncheckedMerge)
 }
 
+// agent.default_allowed_actions roundtrip: absent key grants comment +
+// comment_pr to no-profile runs; explicit values are normalized; an explicit
+// empty list opts out.
+func TestDefaultAllowedActionsDefault(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{config.AgentActionComment, config.AgentActionCommentPR}, cfg.Agent.DefaultAllowedActions)
+}
+
+func TestDefaultAllowedActionsExplicit(t *testing.T) {
+	content := minimal("agent:\n  default_allowed_actions: [Provide_Input, comment, bogus]\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{config.AgentActionComment, config.AgentActionProvideInput}, cfg.Agent.DefaultAllowedActions)
+}
+
+func TestDefaultAllowedActionsExplicitEmptyDisables(t *testing.T) {
+	content := minimal("agent:\n  default_allowed_actions: []\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Agent.DefaultAllowedActions)
+}
+
 func TestWorkspaceRootDefault(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)
@@ -1195,4 +1221,27 @@ func TestLegacySchedulesParsedAsCronAutomations(t *testing.T) {
 	assert.Equal(t, "reviewer", cfg.Automations[0].Profile)
 	assert.Equal(t, []string{"Backlog"}, cfg.Automations[0].Filter.States)
 	assert.Equal(t, []string{"triage"}, cfg.Automations[0].Filter.LabelsAny)
+}
+
+func TestTrackerSingleCommentExplicit(t *testing.T) {
+	content := "---\ntracker:\n  kind: jira\n  api_key: test-token\n  project_slug: PROJ\n  single_comment: true\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.SingleComment)
+}
+
+func TestTrackerSingleCommentDefaultsFalse(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.SingleComment)
+}
+
+func TestTrackerCommentVisibilityGroupExplicit(t *testing.T) {
+	content := "---\ntracker:\n  kind: jira\n  api_key: test-token\n  project_slug: PROJ\n  comment_visibility_group: DB INTERNAL\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "DB INTERNAL", cfg.Tracker.CommentVisibilityGroup)
 }

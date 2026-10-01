@@ -65,6 +65,10 @@ var nonBlockingClosers = []string{
 	"want a summary",
 	"want me to explain",
 	"need anything else",
+	"posted approval comment",
+	"posted an approval comment",
+	"posted confirmation comment",
+	"posted a confirmation comment",
 }
 
 // InputRequiredDecision is the fallback detector's verdict about whether an

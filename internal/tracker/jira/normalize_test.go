@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 func TestAdfToTextSimpleParagraph(t *testing.T) {
@@ -168,4 +169,13 @@ func TestScanBranchMarkerLastWins(t *testing.T) {
 
 func TestScanBranchMarkerNoneReturnsEmpty(t *testing.T) {
 	assert.Equal(t, "", scanBranchMarker([]domain.Comment{{Body: "hello"}}))
+}
+
+func TestScanBranchMarkerInsideSingleComment(t *testing.T) {
+	comments := []domain.Comment{
+		{Body: "🤖 Itervox agent updates\n\n**2026-01-01 10:00 UTC**\nitervox:branch:feature-old\n\n---\n\n" +
+			"**2026-01-01 11:00 UTC**\nitervox:branch:feature-new\n\n" + tracker.SingleCommentMarker},
+		{Body: "human mentions\nitervox:branch:not-a-marker"},
+	}
+	assert.Equal(t, "feature-new", scanBranchMarker(comments))
 }

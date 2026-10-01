@@ -249,7 +249,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	maps.Copy(profilesSnap, o.cfg.Agent.Profiles)
 	o.cfgMu.RUnlock()
 
-	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
+	allowedActions := profilesSnap[profileName].AllowedActions
+	if profileName == "" {
+		// DefaultAllowedActions is read-only after startup — no lock required.
+		allowedActions = o.cfg.Agent.DefaultAllowedActions
+	}
+	profileAllowedActions := filterAllowedActionsForAutomation(allowedActions, automation)
 	// inputRequiredMoveStateGranted mirrors RunEntry.RequiresMoveState (see
 	// state.go doc) for the InputRequiredEntry this run may queue below.
 	inputRequiredMoveStateGranted := automationRun && slices.Contains(profileAllowedActions, config.AgentActionMoveState)
@@ -401,7 +406,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if isReviewer && reviewerTmpl != "" {
 			promptTemplate = reviewerTmpl
 		}
-		renderedPrompt, err := prompt.Render(promptTemplate, issue, attemptPtr)
+		workspaceBindings := map[string]any{
+			"workspace": map[string]any{
+				"base_branch": o.cfg.Workspace.BaseBranch,
+			},
+		}
+		renderedPrompt, err := prompt.RenderWithBindings(promptTemplate, issue, attemptPtr, workspaceBindings)
 		if err != nil {
 			slog.Warn("worker: prompt render failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
@@ -717,6 +727,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if backend == "codex" && !result.Failed {
 			slog.Info("worker: codex turn completed — exiting loop (single-turn backend)",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
+			break
+		}
+
+		// The Run Context block tells the agent to write run.handoff_path
+		// "before exiting", so a successful turn that left a non-empty handoff
+		// has delivered the run's final deliverable. Continuation turns past
+		// this point re-send the full task prompt to a finished agent, which
+		// reads it as a redundant re-dispatch and escalates to input_required
+		// — the success exit (completion_state, auto-review) never happens.
+		if handoffWritten(wsPath, runHandoffRelPath) {
+			slog.Info("worker: run handoff written — deliverable complete, exiting loop",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn,
+				"handoff_path", runHandoffRelPath)
 			break
 		}
 

@@ -143,6 +143,35 @@ func TestValidateDispatchJiraFailsMissingUsername(t *testing.T) {
 	assert.Contains(t, err.Error(), "tracker.username")
 }
 
+func TestValidateDispatchGitLabKindAccepted(t *testing.T) {
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: gitlab\n  api_key: glpat-token\n  project_slug: group/project\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	assert.NoError(t, err)
+}
+
+func TestValidateDispatchGitLabFailsMissingProjectSlug(t *testing.T) {
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: gitlab\n  api_key: glpat-token\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracker.project_slug")
+}
+
+func TestValidateDispatchGitLabFailsMissingAPIKey(t *testing.T) {
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: gitlab\n  project_slug: group/project\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracker.api_key")
+}
+
 // New (v0.2.0): auto_clear and auto_review now coexist. The clear is
 // deferred from main-worker success to reviewer success under the new
 // terminal-state-only semantics, so they no longer race. ValidateDispatch

@@ -83,3 +83,11 @@ type Tracker interface {
 	// over from the default branch. Errors are non-fatal — callers log and ignore.
 	SetIssueBranch(ctx context.Context, issueID, branchName string) error
 }
+
+// CommentUpdater is an optional interface implemented by tracker adapters
+// that can edit an existing comment in place. SingleCommentTracker requires
+// it to consolidate managed comments into one per-issue comment.
+type CommentUpdater interface {
+	// UpdateComment replaces the body of an existing comment on the issue.
+	UpdateComment(ctx context.Context, issueID, commentID, body string) (*domain.Comment, error)
+}

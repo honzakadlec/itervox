@@ -14,7 +14,7 @@ import (
 // CreateComment posts a comment on the given Jira issue, wrapping body in a
 // minimal single-paragraph ADF document (no markdown rendering).
 func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error) {
-	reqBody := map[string]any{"body": adfDoc(body)}
+	reqBody := c.commentRequest(body)
 	raw, err := c.doJSON(ctx, http.MethodPost, "/issue/"+url.PathEscape(issueID)+"/comment", reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("jira: create comment on %s: %w", issueID, err)
@@ -30,6 +30,43 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 		AuthorName: authorName,
 		CreatedAt:  parseJiraTime(raw["created"]),
 	}, nil
+}
+
+// commentRequest builds a comment create/update payload. The visibility
+// restriction is sent on every write so an edit never widens the audience.
+func (c *Client) commentRequest(body string) map[string]any {
+	req := map[string]any{"body": adfDoc(body)}
+	if c.cfg.CommentVisibilityGroup != "" {
+		req["visibility"] = map[string]any{"type": "group", "value": c.cfg.CommentVisibilityGroup}
+	}
+	return req
+}
+
+// UpdateComment replaces the body of an existing Jira comment, wrapping it
+// in the same minimal ADF document as CreateComment.
+func (c *Client) UpdateComment(ctx context.Context, issueID, commentID, body string) (*domain.Comment, error) {
+	reqBody := c.commentRequest(body)
+	path := "/issue/" + url.PathEscape(issueID) + "/comment/" + url.PathEscape(commentID)
+	raw, err := c.doJSON(ctx, http.MethodPut, path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("jira: update comment %s on %s: %w", commentID, issueID, err)
+	}
+	author, _ := raw["author"].(map[string]any)
+	authorID, _ := author["accountId"].(string)
+	authorName, _ := author["displayName"].(string)
+	return &domain.Comment{
+		ID:         commentID,
+		Body:       body,
+		AuthorID:   authorID,
+		AuthorName: authorName,
+		CreatedAt:  parseJiraTime(raw["created"]),
+	}, nil
+}
+
+// BranchMarkerLine implements tracker.BranchMarkerFormatter so a
+// SingleCommentTracker can fold the branch marker into its comment.
+func (c *Client) BranchMarkerLine(branchName string) string {
+	return branchMarkerPrefix + branchName
 }
 
 // createIssueProjectKey picks the Jira project to create a follow-up issue

@@ -59,6 +59,14 @@ type TrackerConfig struct {
 	// issue (case-insensitive) for it to be dispatch-eligible, in addition to
 	// being in an active state. Empty string = no label gate.
 	RequiredLabel string
+	// SingleComment, when true, consolidates every Itervox-managed tracker
+	// comment into one per-issue comment that is edited in place instead of
+	// posting a new comment each time. Input-required questions stay separate.
+	// Only supported by trackers that can edit comments (Jira).
+	SingleComment bool
+	// CommentVisibilityGroup, when non-empty, restricts every comment Itervox
+	// posts or edits to members of this group (Jira only; ignored elsewhere).
+	CommentVisibilityGroup string
 }
 
 // PollingConfig holds polling settings.
@@ -173,6 +181,12 @@ type AgentConfig struct {
 	// hiccups, etc.) so the orchestrator pauses dispatch with reason
 	// "transport_error" instead of marking the issue failed. todolist4 A.4.
 	TransportErrorPatterns []string
+	// DefaultAllowedActions grants daemon-backed actions to worker runs that
+	// have no profile assigned, so the shared prompt's `itervox action
+	// comment` channel still works. Default when the key is absent:
+	// ["comment", "comment_pr"]. An explicit empty list disables actions for
+	// no-profile runs. Unsupported values are dropped. Read-only after startup.
+	DefaultAllowedActions []string
 	// MaxAutomationQueueLength caps durable automation dispatch entries waiting
 	// for worker capacity or dependency resolution. Values <= 0 use the default
 	// of 100; the queue is never unlimited.
@@ -419,6 +433,8 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Username = resolveSecret(strField(tracker, "username", ""))
 	cfg.Tracker.DefaultIssueType = strField(tracker, "default_issue_type", "Task")
 	cfg.Tracker.RequiredLabel = strField(tracker, "required_label", "")
+	cfg.Tracker.SingleComment = boolField(tracker, "single_comment", false)
+	cfg.Tracker.CommentVisibilityGroup = strField(tracker, "comment_visibility_group", "")
 
 	// Polling
 	polling := nestedMap(raw, "polling")
@@ -450,6 +466,13 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.MergeBlockLabels = strSliceField(agent, "merge_block_labels", []string{"needs-human", "migration", "auth", "feature-flag", "breaking"})
 	cfg.Agent.AllowUncheckedMerge = boolField(agent, "allow_unchecked_merge", false)
 	cfg.Agent.TransportErrorPatterns = strSliceField(agent, "transport_error_patterns", []string{"stream disconnected", "connection reset", "i/o timeout"})
+	// strSliceField maps an explicit [] to the default, so check key presence
+	// directly to let operators opt out with `default_allowed_actions: []`.
+	if _, ok := agent["default_allowed_actions"]; ok {
+		cfg.Agent.DefaultAllowedActions = NormalizeAllowedActions(strSliceField(agent, "default_allowed_actions", nil))
+	} else {
+		cfg.Agent.DefaultAllowedActions = []string{AgentActionComment, AgentActionCommentPR}
+	}
 	sortMap := mapField(agent, "sort")
 	cfg.Agent.PreferHighOutdegreeSort = boolField(sortMap, "prefer_high_outdegree", false)
 	cfg.Agent.SSHHosts = strSliceField(agent, "ssh_hosts", nil)

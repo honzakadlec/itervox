@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // jiraTimeLayout matches Jira Cloud's timestamp format, e.g.
@@ -184,12 +185,21 @@ func extractBlockers(fields map[string]any) []domain.BlockerRef {
 const branchMarkerPrefix = "itervox:branch:"
 
 // scanBranchMarker returns the branch name from the most recent marker
-// comment (last one wins), or "" if none is present.
+// comment (last one wins), or "" if none is present. Inside the consolidated
+// tracker.SingleCommentTracker comment the marker is matched on any line.
 func scanBranchMarker(comments []domain.Comment) string {
 	branch := ""
 	for _, c := range comments {
-		if trimmed, ok := strings.CutPrefix(strings.TrimSpace(c.Body), branchMarkerPrefix); ok {
-			branch = strings.TrimSpace(trimmed)
+		if !strings.Contains(c.Body, tracker.SingleCommentMarker) {
+			if trimmed, ok := strings.CutPrefix(strings.TrimSpace(c.Body), branchMarkerPrefix); ok {
+				branch = strings.TrimSpace(trimmed)
+			}
+			continue
+		}
+		for line := range strings.Lines(c.Body) {
+			if trimmed, ok := strings.CutPrefix(strings.TrimSpace(line), branchMarkerPrefix); ok {
+				branch = strings.TrimSpace(trimmed)
+			}
 		}
 	}
 	return branch

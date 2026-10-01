@@ -244,6 +244,7 @@ These retry and rate-limit settings are also editable from the Settings dashboar
 | `switch_revert_hours` | int | `0` | TTL (in hours) after which an auto-applied profile/backend switch is reverted on the next poll cycle, returning the issue to its original profile and backend. `0` (default) disables the revert. Operator-set overrides survive — only auto-switches with a recorded `AutoSwitchedAt` timestamp are eligible. |
 | `rate_limit_error_patterns` | string[] | `[]` | Custom substrings for detecting rate-limit errors in agent stderr. Empty falls back to built-in defaults (`rate_limit_exceeded`, `rate limit`, `429`, `quota`, `too many requests`). |
 | `allow_unchecked_merge` | bool | `false` | When `false` (default), the `merge_pr` action refuses to merge on a repo with zero required checks configured (reason `unarmed_gate:...`) instead of merging with no CI coverage. Set `true` to merge anyway; the daemon still logs a loud warning. |
+| `default_allowed_actions` | string[] | `[comment, comment_pr]` | Daemon-backed actions granted to worker runs that have no profile assigned, so `"$ITERVOX_BIN" action comment` works for them too. Same values as a profile's `allowed_actions`. Set `[]` to disable actions for no-profile runs. |
 
 ```yaml
 agent:

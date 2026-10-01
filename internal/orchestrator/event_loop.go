@@ -379,13 +379,13 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 
 // itervoxCommentPrefix is the prefix used by Itervox when posting input-required
 // question comments. Used to identify and skip own comments when detecting user replies.
-const itervoxCommentPrefix = "🤖 **Agent needs your input**"
+const itervoxCommentPrefix = tracker.InputRequiredCommentPrefix
 
 func buildInputRequiredComment(entry *InputRequiredEntry) string {
 	if entry == nil {
 		return ""
 	}
-	return fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n_Reply in the tracker or via the Itervox dashboard to continue._", entry.Context)
+	return fmt.Sprintf(itervoxCommentPrefix+"\n\n%s\n\n---\n_Reply in the tracker or via the Itervox dashboard to continue._", entry.Context)
 }
 
 func buildPendingInputResumeEntry(entry *InputRequiredEntry, userMessage string) *PendingInputResumeEntry {

@@ -38,6 +38,10 @@ type ClientConfig struct {
 	BacklogStates []string
 	// DefaultIssueType names the issue type used by CreateIssue. Defaults to "Task".
 	DefaultIssueType string
+	// CommentVisibilityGroup, when non-empty, restricts every comment the
+	// adapter creates or edits to members of this Jira group (e.g. an
+	// internal staff group), hiding them from customers.
+	CommentVisibilityGroup string
 }
 
 // Client is the Jira Cloud REST tracker adapter.

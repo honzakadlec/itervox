@@ -608,6 +608,61 @@ func TestRemoteWorkerAllowedActionsDoNotInjectDaemonActionEnv(t *testing.T) {
 	assert.Contains(t, wrapped.LastPrompt(), "not available on remote SSH workers")
 }
 
+// runNoProfileWorkerCommand dispatches ENG-1 with no profile assigned and
+// returns the agent command the runner received.
+func runNoProfileWorkerCommand(t *testing.T, defaultAllowedActions []string) string {
+	t.Helper()
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.Command = "claude"
+	cfg.Agent.DefaultAllowedActions = defaultAllowedActions
+	mt := singleIssueTracker(t, "In Progress")
+	wrapped := &capturingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+	orch.SetAgentActionBaseURL("http://127.0.0.1:9999")
+	orch.SetAgentActionTokens(agentactions.NewStore())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_ = orch.Run(ctx)
+	}()
+
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("runner was not invoked within 2s")
+	}
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orchestrator did not stop after cancel")
+	}
+	return wrapped.LastCommand()
+}
+
+func TestNoProfileWorkerReceivesDefaultAllowedActionsEnv(t *testing.T) {
+	command := runNoProfileWorkerCommand(t, []string{config.AgentActionComment, config.AgentActionCommentPR})
+	assert.Contains(t, command, "ITERVOX_ACTION_TOKEN=")
+	assert.Contains(t, command, "ITERVOX_DAEMON_URL=")
+	assert.Contains(t, command, "ITERVOX_ISSUE_IDENTIFIER=")
+}
+
+func TestNoProfileWorkerWithoutDefaultAllowedActionsGetsNoActionEnv(t *testing.T) {
+	command := runNoProfileWorkerCommand(t, nil)
+	assert.False(t, strings.Contains(command, "ITERVOX_ACTION_TOKEN="), "no-profile runs with actions disabled must not receive action tokens")
+}
+
 // TestTeamsModeUsesResolvedProfileBackendForSubagentContext was authored
 // when the (now-removed) `agent_mode == "teams"` gate controlled subagent
 // roster injection. The roster now always injects when there's more than one
