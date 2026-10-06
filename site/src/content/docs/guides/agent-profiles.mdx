@@ -233,6 +233,7 @@ Available actions:
 - `comment` — post a tracker comment on the current issue.
 - `comment_pr` — post a structured review comment with file/line/severity findings on the issue.
 - `create_issue` — open a follow-up issue in the configured tracker state.
+- `mark_merged` — record that the current issue's MRs/PRs are merged; the daemon moves the issue to `tracker.completion_state`. This is how an issue leaves `tracker.review_state`. Call it only after the merge has actually happened.
 - `merge_pr` — run the daemon's guarded `gh pr merge` sequence for a PR on the current issue. The daemon validates the request against the profile's `allowed_actions` like every other action, then enforces the merge gate server-side (see below) — the agent never gets raw `gh` credentials or an ungated merge path.
 - `move_state` — transition the current issue to another tracker column.
 - `provide_input` — answer an input-required prompt and resume the blocked session.

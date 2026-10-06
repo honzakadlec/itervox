@@ -72,6 +72,30 @@ func TestReconcileTrackerStatesTerminalCleansup(t *testing.T) {
 	assert.False(t, still, "terminal state should remove from running")
 }
 
+// Auto-review dispatches the reviewer only after the implementer has moved
+// the issue to completion_state, which is usually terminal. Reconcile must not
+// stop it there or the reviewer never gets past its first turn.
+func TestReconcileTrackerStatesKeepsReviewerOnTerminalIssue(t *testing.T) {
+	cfg := cfgWithStall(300000)
+	state := orchestrator.NewState(cfg)
+	entry := runningEntry("id1", "Done", nil)
+	entry.Kind = "reviewer"
+	state.Running["id1"] = entry
+
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{makeIssue("id1", "ENG-1", "Done", nil, nil)},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+	events := make(chan orchestrator.OrchestratorEvent, 10)
+
+	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
+	got, still := state.Running["id1"]
+	assert.True(t, still, "reviewer on a terminal issue must keep running")
+	assert.Equal(t, "Done", got.Issue.State)
+	assert.Empty(t, events, "no exit event for a kept reviewer")
+}
+
 func TestReconcileTrackerStatesActiveUpdatesSnapshot(t *testing.T) {
 	cfg := cfgWithStall(300000)
 	state := orchestrator.NewState(cfg)

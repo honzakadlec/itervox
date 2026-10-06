@@ -200,7 +200,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 		if ws.CreatedNow && !skipFreshDispatchSetup {
 			hookLog := o.hookLogFn(issue.Identifier, runLogID)
-			if err := workspace.RunHook(ctx, o.cfg.Hooks.AfterCreate, wsPath, o.cfg.Hooks.TimeoutMs, hookLog); err != nil {
+			if err := workspace.RunHookWithEnv(ctx, o.cfg.Hooks.AfterCreate, wsPath, o.cfg.Hooks.TimeoutMs, hookRunEnv(issue.Identifier, runLogID), hookLog); err != nil {
 				slog.Warn("worker: after_create hook failed, removing workspace so next retry re-runs it",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 				if o.logBuf != nil {
@@ -309,7 +309,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// attempt without wiping Claude's work between turns.
 	if wsPath != "" && !skipFreshDispatchSetup {
 		hookLog := o.hookLogFn(issue.Identifier, runLogID)
-		if err := workspace.RunHook(ctx, beforeRunHook, wsPath, hookTimeoutMs, hookLog); err != nil {
+		if err := workspace.RunHookWithEnv(ctx, beforeRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID), hookLog); err != nil {
 			slog.Warn("worker: before_run hook failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 			if o.logBuf != nil {
@@ -424,7 +424,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			// a loop — defer would not fire until runWorker returns (GO-R10-2).
 			if wsPath != "" {
 				hookCtx, hookCancel := context.WithTimeout(context.Background(), hookFallbackTimeout)
-				if hookErr := workspace.RunHook(hookCtx, afterRunHook, wsPath, hookTimeoutMs, o.hookLogFn(issue.Identifier, runLogID)); hookErr != nil {
+				if hookErr := workspace.RunHookWithEnv(hookCtx, afterRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID), o.hookLogFn(issue.Identifier, runLogID)); hookErr != nil {
 					slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issue.ID, "error", hookErr)
 				}
 				hookCancel()
@@ -978,9 +978,23 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// transient API errors that would otherwise cause an infinite dispatch loop.
 	// Skip if the worker context was cancelled (user paused/killed the issue) —
 	// transitioning state on a cancelled run would wrongly move a paused issue.
+	//
+	// With review_state configured, "agent finished" and "work landed" are
+	// separate: implementer runs move to review_state, and reviewer runs apply
+	// no automatic transition — the reviewer moves the issue to
+	// completion_state itself via the mark_merged action once it has merged.
 	o.cfgMu.RLock()
 	completionState := o.cfg.Tracker.CompletionState
+	isReviewerRun := profileName != "" && profileName == o.cfg.Agent.ReviewerProfile
 	o.cfgMu.RUnlock()
+	// ReviewState is read-only after startup — no lock required.
+	if reviewState := o.cfg.Tracker.ReviewState; reviewState != "" {
+		if isReviewerRun {
+			completionState = ""
+		} else {
+			completionState = reviewState
+		}
+	}
 	if completionState != "" && ctx.Err() == nil && !automationRun {
 		slog.Info("worker: transitioning to completion state",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "target_state", completionState)
@@ -1295,11 +1309,21 @@ func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs 
 	if wsPath == "" {
 		return nil
 	}
-	if err := workspace.RunHook(ctx, hook, wsPath, timeoutMs, o.hookLogFn(identifier, sessionID)); err != nil {
+	if err := workspace.RunHookWithEnv(ctx, hook, wsPath, timeoutMs, hookRunEnv(identifier, sessionID), o.hookLogFn(identifier, sessionID)); err != nil {
 		slog.Warn("worker: after_run hook failed", "issue_id", issueID, "error", err)
 		return err
 	}
 	return nil
+}
+
+// hookRunEnv is the per-run env passed to after_create, before_run and
+// after_run hooks so they can address the issue and correlate with the run
+// (same names the agent subprocess receives via the action bridge).
+func hookRunEnv(identifier, runID string) map[string]string {
+	return map[string]string{
+		"ITERVOX_ISSUE_IDENTIFIER": identifier,
+		"ITERVOX_RUN_ID":           runID,
+	}
 }
 
 func prepareAgentActionRuntime(tokens interface {
@@ -1402,6 +1426,8 @@ func buildAgentActionContext(actions []string, createIssueState, moveIssueState 
 			} else {
 				lines = append(lines, "- `itervox action move-state --state \"...\"` moves the current issue to a new tracker state.")
 			}
+		case config.AgentActionMarkMerged:
+			lines = append(lines, "- `itervox action mark-merged` records that this issue's MRs/PRs are merged and moves the current issue to the completion state. Call it only after the merge has actually happened.")
 		case config.AgentActionProvideInput:
 			lines = append(lines, "- `itervox action provide-input --message \"...\"` answers an input-required prompt and resumes the blocked run.")
 		case config.AgentActionCommentPR:

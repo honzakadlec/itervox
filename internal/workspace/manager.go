@@ -104,7 +104,8 @@ func (m *Manager) RemoveWorkspace(ctx context.Context, identifier, branchName st
 		// logFn is intentionally omitted: at cleanup time the per-issue log buffer
 		// entry may already be removed, so there is no reliable destination for
 		// hook output. Hook failures are still surfaced via slog.Warn below.
-		if err := RunHook(ctx, m.cfg.Hooks.BeforeRemove, hookPath, m.cfg.Hooks.TimeoutMs); err != nil {
+		env := map[string]string{"ITERVOX_ISSUE_IDENTIFIER": identifier}
+		if err := RunHookWithEnv(ctx, m.cfg.Hooks.BeforeRemove, hookPath, m.cfg.Hooks.TimeoutMs, env); err != nil {
 			// Hook failure is non-fatal: log and proceed with removal so a broken
 			// hook cannot permanently prevent workspace cleanup.
 			slog.Warn("workspace: before_remove hook failed, proceeding with removal",

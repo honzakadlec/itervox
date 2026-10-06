@@ -49,6 +49,7 @@ export function BoardView({
     backlogStates,
     activeStates,
     completionState,
+    reviewState,
     terminalStates,
     inputRequired,
     retrying,
@@ -63,6 +64,7 @@ export function BoardView({
       backlogStates: s.snapshot?.backlogStates ?? EMPTY_STATES,
       activeStates: s.snapshot?.activeStates ?? EMPTY_STATES,
       completionState: s.snapshot?.completionState ?? '',
+      reviewState: s.snapshot?.reviewState ?? '',
       terminalStates: s.snapshot?.terminalStates ?? EMPTY_STATES,
       inputRequired: s.snapshot?.inputRequired ?? EMPTY_INPUT_REQUIRED,
       retrying: s.snapshot?.retrying ?? EMPTY_RETRYING,
@@ -160,9 +162,16 @@ export function BoardView({
 
   const columnNames = useMemo(() => {
     const completion = completionState ? [completionState] : [];
+    const review = reviewState ? [reviewState] : [];
     const seen = new Set<string>();
     const cols: string[] = [];
-    for (const s of [...backlogStates, ...activeStates, ...completion, ...terminalStates]) {
+    for (const s of [
+      ...backlogStates,
+      ...activeStates,
+      ...review,
+      ...completion,
+      ...terminalStates,
+    ]) {
       if (!seen.has(s)) {
         seen.add(s);
         cols.push(s);
@@ -172,7 +181,7 @@ export function BoardView({
       return Array.from(new Set(issues.map((i) => i.state)));
     }
     return cols;
-  }, [backlogStates, activeStates, completionState, terminalStates, issues]);
+  }, [backlogStates, activeStates, reviewState, completionState, terminalStates, issues]);
 
   const columns = useMemo(() => {
     return columnNames.map((state) => {

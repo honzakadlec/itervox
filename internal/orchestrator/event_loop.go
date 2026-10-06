@@ -212,6 +212,11 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		// comment, restore the issue to InputRequiredIssues instead of dispatching
 		// a fresh worker. This recovers from daemon restarts / state loss.
 		if entry := o.recoverInputRequired(ctx, issue); entry != nil {
+			// The tracker comment carries no runner metadata. Resolve the
+			// profile/backend/command a fresh dispatch would use so the
+			// resumed run does not fall back to bare agent.command and lose
+			// the profile's SOUL/INSTRUCTIONS.
+			entry.ProfileName, _, _, entry.Command, entry.Backend, _ = o.resolveIssueDispatchTarget(state, issue.Identifier)
 			state.InputRequiredIssues[issue.Identifier] = entry
 			// Recovery path: no live RunEntry — the previous worker is gone
 			// (daemon restart / state loss). B1 self-reentry guard does not
@@ -631,6 +636,14 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			delete(state.PendingInputResumes, identifier)
 			continue
 		}
+		if entry.Kind == "" && entry.Automation == nil &&
+			entry.ProfileName == "" && entry.Command == "" && entry.Backend == "" {
+			// No runner metadata — the entry was rehydrated from a tracker
+			// comment (possibly by an older daemon and then persisted to
+			// input_required.json). Resolve what a fresh dispatch would use
+			// so the resume keeps the default/per-issue profile.
+			entry.ProfileName, _, _, entry.Command, entry.Backend, _ = o.resolveIssueDispatchTarget(state, identifier)
+		}
 		if _, running := state.Running[entry.IssueID]; running {
 			continue
 		}
@@ -747,39 +760,11 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	o.cfgMu.RLock()
 	hosts := append([]string{}, o.cfg.Agent.SSHHosts...)
 	dispatchStrategy := o.cfg.Agent.DispatchStrategy
-	agentCommand := o.cfg.Agent.Command
-	defaultBackend := o.cfg.Agent.Backend
 	o.cfgMu.RUnlock()
 
 	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, state)
 
-	// Resolve the issue's profile (clearing it if not found / disabled), then
-	// compute the effective (cmd, runnerCmd, backend) via the shared helper.
-	// The same logic powers reviewer dispatch — see resolveBackendForIssue.
-	profileName := o.issueProfileForDispatch(state, issue.Identifier)
-	var profilePtr *config.AgentProfile
-	if profileName != "" {
-		o.cfgMu.RLock()
-		profile, ok := o.cfg.Agent.Profiles[profileName]
-		o.cfgMu.RUnlock()
-		switch {
-		case !ok:
-			slog.Warn("orchestrator: profile not found, using default",
-				"identifier", issue.Identifier, "profile", profileName)
-			profileName = "" // worker will not reference a missing profile
-		case !config.ProfileEnabled(profile):
-			slog.Warn("orchestrator: profile disabled, using default",
-				"identifier", issue.Identifier, "profile", profileName)
-			profileName = ""
-		default:
-			profilePtr = &profile
-		}
-	}
-	issueBackend := o.issueBackendForDispatch(state, issue.Identifier)
-
-	agentCommand, runnerCommand, backend := resolveBackendForIssue(
-		agentCommand, defaultBackend, profilePtr, issueBackend,
-	)
+	profileName, profilePtr, agentCommand, runnerCommand, backend, issueBackend := o.resolveIssueDispatchTarget(state, issue.Identifier)
 	if profilePtr != nil {
 		slog.Info("orchestrator: using profile",
 			"identifier", issue.Identifier, "profile", profileName, "command", agentCommand, "backend", backend)
@@ -838,6 +823,44 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	return state
 }
 
+// resolveIssueDispatchTarget resolves the issue's profile (clearing it if not
+// found / disabled), then computes the effective (cmd, runnerCmd, backend) via
+// the shared helper. Used by regular dispatch and by tracker-comment recovery
+// of input-required issues, so a recovered resume runs under the same profile
+// a fresh dispatch would. The same logic powers reviewer dispatch — see
+// resolveBackendForIssue.
+func (o *Orchestrator) resolveIssueDispatchTarget(state State, identifier string) (profileName string, profilePtr *config.AgentProfile, agentCommand, runnerCommand, backend, issueBackend string) {
+	o.cfgMu.RLock()
+	defaultCommand := o.cfg.Agent.Command
+	defaultBackend := o.cfg.Agent.Backend
+	o.cfgMu.RUnlock()
+
+	profileName = o.issueProfileForDispatch(state, identifier)
+	if profileName != "" {
+		o.cfgMu.RLock()
+		profile, ok := o.cfg.Agent.Profiles[profileName]
+		o.cfgMu.RUnlock()
+		switch {
+		case !ok:
+			slog.Warn("orchestrator: profile not found, using default",
+				"identifier", identifier, "profile", profileName)
+			profileName = "" // worker will not reference a missing profile
+		case !config.ProfileEnabled(profile):
+			slog.Warn("orchestrator: profile disabled, using default",
+				"identifier", identifier, "profile", profileName)
+			profileName = ""
+		default:
+			profilePtr = &profile
+		}
+	}
+	issueBackend = o.issueBackendForDispatch(state, identifier)
+
+	agentCommand, runnerCommand, backend = resolveBackendForIssue(
+		defaultCommand, defaultBackend, profilePtr, issueBackend,
+	)
+	return profileName, profilePtr, agentCommand, runnerCommand, backend, issueBackend
+}
+
 func (o *Orchestrator) issueProfileForDispatch(state State, identifier string) string {
 	profileName := state.IssueProfiles[identifier]
 	o.issueProfilesMu.RLock()
@@ -845,6 +868,10 @@ func (o *Orchestrator) issueProfileForDispatch(state State, identifier string) s
 		profileName = override
 	}
 	o.issueProfilesMu.RUnlock()
+	if profileName == "" {
+		// DefaultProfile is read-only after startup — no lock required.
+		profileName = o.cfg.Agent.DefaultProfile
+	}
 	return profileName
 }
 
@@ -1173,6 +1200,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			allStates = append(allStates, o.cfg.Tracker.CompletionState)
 		}
 		o.cfgMu.RUnlock()
+		// ReviewState is read-only after startup — no lock required. Issues
+		// waiting in review_state are exactly the ones a reviewer re-run targets.
+		if o.cfg.Tracker.ReviewState != "" {
+			allStates = append(allStates, o.cfg.Tracker.ReviewState)
+		}
 		issues, err := o.tracker.FetchIssuesByStates(ctx, allStates)
 		if err != nil {
 			slog.Warn("orchestrator: reviewer fetch failed", "identifier", ev.Identifier, "error", err)

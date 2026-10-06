@@ -69,3 +69,21 @@ func TestRemoveWorkspaceNonExistentIsNoOp(t *testing.T) {
 	err := mgr.RemoveWorkspace(context.Background(), "nonexistent-issue", "")
 	assert.NoError(t, err)
 }
+
+func TestBeforeRemoveHookReceivesIssueIdentifier(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(t.TempDir(), "captured.txt")
+	cfg := &config.Config{}
+	cfg.Workspace.Root = root
+	cfg.Hooks.BeforeRemove = `printf '%s' "$ITERVOX_ISSUE_IDENTIFIER" > ` + out
+	mgr := workspace.NewManager(cfg)
+
+	_, err := mgr.EnsureWorkspace(context.Background(), "ENG-7", "")
+	require.NoError(t, err)
+	require.NoError(t, mgr.RemoveWorkspace(context.Background(), "ENG-7", ""))
+
+	data, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, "ENG-7", string(data))
+	assert.NoDirExists(t, filepath.Join(root, "ENG-7"))
+}

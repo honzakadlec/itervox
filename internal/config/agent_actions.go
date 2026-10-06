@@ -9,6 +9,7 @@ const (
 	AgentActionComment      = "comment"
 	AgentActionCommentPR    = "comment_pr"
 	AgentActionCreateIssue  = "create_issue"
+	AgentActionMarkMerged   = "mark_merged"
 	AgentActionMergePR      = "merge_pr"
 	AgentActionMoveState    = "move_state"
 	AgentActionProvideInput = "provide_input"
@@ -18,6 +19,7 @@ var supportedAgentActions = []string{
 	AgentActionComment,
 	AgentActionCommentPR,
 	AgentActionCreateIssue,
+	AgentActionMarkMerged,
 	AgentActionMergePR,
 	AgentActionMoveState,
 	AgentActionProvideInput,
@@ -27,6 +29,7 @@ var supportedAgentActionSet = map[string]struct{}{
 	AgentActionComment:      {},
 	AgentActionCommentPR:    {},
 	AgentActionCreateIssue:  {},
+	AgentActionMarkMerged:   {},
 	AgentActionMergePR:      {},
 	AgentActionMoveState:    {},
 	AgentActionProvideInput: {},

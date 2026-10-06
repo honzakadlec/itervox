@@ -1098,6 +1098,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			ActiveStates:                 activeStates,
 			TerminalStates:               terminalStates,
 			CompletionState:              completionState,
+			ReviewState:                  cfg.Tracker.ReviewState,
 			BacklogStates:                cfg.Tracker.BacklogStates,
 			PollIntervalMs:               cfg.Polling.IntervalMs,
 			AutoClearWorkspace:           autoClearWorkspace,
@@ -1587,6 +1588,7 @@ func buildTrackerAdapter(cfg *config.Config) (tracker.Tracker, error) {
 			TerminalStates:  cfg.Tracker.TerminalStates,
 			BacklogStates:   cfg.Tracker.BacklogStates,
 			CompletionState: cfg.Tracker.CompletionState,
+			ReviewState:     cfg.Tracker.ReviewState,
 		}), nil
 	case "memory":
 		issues := tracker.GenerateDemoIssues(10)
@@ -1673,7 +1675,7 @@ func runClear(args []string) {
 
 func runAction(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "itervox action: expected subcommand: comment | create-issue | move-state | provide-input")
+		fmt.Fprintln(os.Stderr, "itervox action: expected subcommand: comment | create-issue | move-state | mark-merged | provide-input")
 		fatalExit(1)
 	}
 
@@ -1728,6 +1730,13 @@ func runAction(args []string) {
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/move-state"
 		body = map[string]string{"state": *state}
+	case "mark-merged":
+		// Records that the issue's MRs/PRs are merged; the daemon moves the
+		// issue to completion_state (the exit from tracker.review_state).
+		fs := flag.NewFlagSet("action mark-merged", flag.ExitOnError)
+		_ = fs.Parse(args[1:])
+		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/mark-merged"
+		body = map[string]string{}
 	case "provide-input":
 		fs := flag.NewFlagSet("action provide-input", flag.ExitOnError)
 		message := fs.String("message", "", "input message to resume the blocked run")

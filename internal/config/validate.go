@@ -44,6 +44,14 @@ var ErrReviewerProfileDisabled = errors.New("agent.reviewer_profile must referen
 // profile does not exist in agent.profiles.
 var ErrDepsAnalyzerProfileNotFound = errors.New("agent.deps_analyzer_profile must reference an existing profile")
 
+// ErrDefaultProfileNotFound reports that agent.default_profile names a
+// profile that does not exist in agent.profiles.
+var ErrDefaultProfileNotFound = errors.New("agent.default_profile must reference an existing profile")
+
+// ErrDefaultProfileDisabled reports that agent.default_profile names a
+// disabled profile.
+var ErrDefaultProfileDisabled = errors.New("agent.default_profile must reference an enabled profile")
+
 // ErrDepsAnalyzerProfileDisabled reports that a configured dependency-analyzer
 // profile exists but is disabled.
 var ErrDepsAnalyzerProfileDisabled = errors.New("agent.deps_analyzer_profile must reference an enabled profile")
@@ -131,6 +139,51 @@ func ValidateReviewerProfile(profiles map[string]AgentProfile, reviewerProfile s
 	return nil
 }
 
+// ValidateDefaultProfile rejects configurations whose agent.default_profile
+// names a profile that is missing or disabled. Empty is accepted (no default).
+func ValidateDefaultProfile(profiles map[string]AgentProfile, defaultProfile string) error {
+	defaultProfile = strings.TrimSpace(defaultProfile)
+	if defaultProfile == "" {
+		return nil
+	}
+	profile, ok := profiles[defaultProfile]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrDefaultProfileNotFound, defaultProfile)
+	}
+	if !ProfileEnabled(profile) {
+		return fmt.Errorf("%w: %q", ErrDefaultProfileDisabled, defaultProfile)
+	}
+	return nil
+}
+
+// ValidateReviewState rejects a tracker.review_state that would defeat its
+// purpose: it needs a completion_state to hand off to, and it must be neither
+// active (the issue would be re-dispatched) nor terminal (dependents would be
+// released before the work lands). Empty is accepted (feature off).
+func ValidateReviewState(tr TrackerConfig) error {
+	review := strings.TrimSpace(tr.ReviewState)
+	if review == "" {
+		return nil
+	}
+	if strings.TrimSpace(tr.CompletionState) == "" {
+		return fmt.Errorf("tracker.review_state %q requires tracker.completion_state to be set", review)
+	}
+	if strings.EqualFold(review, strings.TrimSpace(tr.CompletionState)) {
+		return fmt.Errorf("tracker.review_state %q must differ from tracker.completion_state", review)
+	}
+	for _, s := range tr.ActiveStates {
+		if strings.EqualFold(review, strings.TrimSpace(s)) {
+			return fmt.Errorf("tracker.review_state %q must not be one of tracker.active_states", review)
+		}
+	}
+	for _, s := range tr.TerminalStates {
+		if strings.EqualFold(review, strings.TrimSpace(s)) {
+			return fmt.Errorf("tracker.review_state %q must not be one of tracker.terminal_states", review)
+		}
+	}
+	return nil
+}
+
 // ValidateDepsAnalyzerProfile rejects configurations whose
 // agent.deps_analyzer_profile names a profile that is missing or disabled.
 // Empty is accepted (analyzer simply disabled).
@@ -187,6 +240,10 @@ func ValidateDispatch(cfg *Config) error {
 		return fmt.Errorf("missing tracker.endpoint: required for Jira (e.g. https://yourdomain.atlassian.net)")
 	}
 
+	if err := ValidateReviewState(cfg.Tracker); err != nil {
+		return err
+	}
+
 	// Check 5: agent.command present and non-empty
 	if cfg.Agent.Command == "" {
 		return fmt.Errorf("missing agent.command: must be non-empty (default: claude)")
@@ -234,6 +291,9 @@ func ValidateDispatch(cfg *Config) error {
 		return err
 	}
 	if err := ValidateDepsAnalyzerProfile(cfg.Agent.Profiles, cfg.Agent.DepsAnalyzerProfile); err != nil {
+		return err
+	}
+	if err := ValidateDefaultProfile(cfg.Agent.Profiles, cfg.Agent.DefaultProfile); err != nil {
 		return err
 	}
 	if err := ValidateAutoClearAutoReview(

@@ -302,6 +302,10 @@ type OrchestratorClient interface {
 	// run exited. The implementation must be safe to call from an HTTP
 	// handler goroutine.
 	BumpMoveStateCount(identifier string)
+	// MarkIssueMerged moves the issue to the configured completion_state on
+	// behalf of an agent that has merged the issue's MRs/PRs (mark_merged
+	// action). Returns the target state. Errors when completion_state is unset.
+	MarkIssueMerged(ctx context.Context, identifier string) (string, error)
 	// TestAutomation dispatches a one-off automation worker for the given
 	// rule against the given issue (T-10). The resulting run is tagged with
 	// TriggerType="test" so timeline / activity surfaces can distinguish it
@@ -365,7 +369,10 @@ func (noopClient) DismissInput(string) bool                               { retu
 func (noopClient) SetInlineInput(bool) error                              { return errNotConfigured }
 func (noopClient) BumpCommentCount(string)                                {}
 func (noopClient) BumpMoveStateCount(string)                              {}
-func (noopClient) TestAutomation(context.Context, string, string) error   { return errNotConfigured }
+func (noopClient) MarkIssueMerged(context.Context, string) (string, error) {
+	return "", errNotConfigured
+}
+func (noopClient) TestAutomation(context.Context, string, string) error { return errNotConfigured }
 
 // FuncClient builds an OrchestratorClient from individual function fields.
 // Any nil field falls back to the noopClient default. Intended for tests.
@@ -416,6 +423,7 @@ type FuncClient struct {
 	DismissInputFn                    func(string) bool
 	BumpCommentCountFn                func(string)
 	BumpMoveStateCountFn              func(string)
+	MarkIssueMergedFn                 func(context.Context, string) (string, error)
 	TestAutomationFn                  func(context.Context, string, string) error
 }
 
@@ -686,6 +694,13 @@ func (c *FuncClient) BumpCommentCount(identifier string) {
 		c.BumpCommentCountFn(identifier)
 	}
 }
+func (c *FuncClient) MarkIssueMerged(ctx context.Context, identifier string) (string, error) {
+	if c.MarkIssueMergedFn != nil {
+		return c.MarkIssueMergedFn(ctx, identifier)
+	}
+	return "", errNotConfigured
+}
+
 func (c *FuncClient) BumpMoveStateCount(identifier string) {
 	if c.BumpMoveStateCountFn != nil {
 		c.BumpMoveStateCountFn(identifier)
@@ -747,6 +762,9 @@ type StateSnapshot struct {
 	TerminalStates []string `json:"terminalStates,omitempty"`
 	// CompletionState is the state the agent moves an issue to when it finishes (may be empty).
 	CompletionState string `json:"completionState,omitempty"`
+	// ReviewState is tracker.review_state: where implementer runs park issues
+	// until the reviewer marks them merged (may be empty).
+	ReviewState string `json:"reviewState,omitempty"`
 	// BacklogStates are always-fetched states shown as the leftmost board column.
 	BacklogStates []string `json:"backlogStates,omitempty"`
 	// PausedWithPR maps paused issue identifiers to a known open-PR URL.
@@ -1205,6 +1223,7 @@ func (s *Server) routes() {
 		r.Post("/agent-actions/{identifier}/merge_pr", s.handleAgentMergePR)
 		r.Post("/agent-actions/{identifier}/create-issue", s.handleAgentCreateIssue)
 		r.Post("/agent-actions/{identifier}/move-state", s.handleAgentMoveState)
+		r.Post("/agent-actions/{identifier}/mark-merged", s.handleAgentMarkMerged)
 		r.Post("/agent-actions/{identifier}/provide-input", s.handleAgentProvideInput)
 
 		// If an API token is configured, all remaining routes require it.

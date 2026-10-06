@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,6 +66,21 @@ func (a *orchestratorAdapter) BumpCommentCount(identifier string) {
 // it (see RunEntry.RequiresMoveState).
 func (a *orchestratorAdapter) BumpMoveStateCount(identifier string) {
 	a.orch.BumpMoveStateCount(identifier)
+}
+
+// MarkIssueMerged moves the issue to the live completion_state (cfgMu-guarded,
+// read via TrackerStatesCfg) through UpdateIssueState, so the status change is
+// recorded and the GitLab adapter closes the issue natively as it does for any
+// completion transition.
+func (a *orchestratorAdapter) MarkIssueMerged(ctx context.Context, identifier string) (string, error) {
+	_, _, completion := a.orch.TrackerStatesCfg()
+	if completion == "" {
+		return "", errors.New("mark_merged: tracker.completion_state is not configured")
+	}
+	if err := a.UpdateIssueState(ctx, identifier, completion); err != nil {
+		return "", err
+	}
+	return completion, nil
 }
 
 // TestAutomation delegates to the orchestrator's one-off test dispatcher

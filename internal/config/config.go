@@ -41,6 +41,14 @@ type TrackerConfig struct {
 	// finishes successfully (e.g. "In Review", "Done"). Empty string = no transition.
 	// When set, the issue leaves active_states so Itervox stops re-dispatching it.
 	CompletionState string
+	// ReviewState, when non-empty, splits "agent finished" from "work landed".
+	// A successful implementer run moves the issue here instead of to
+	// CompletionState, and a reviewer run applies no automatic transition: the
+	// reviewer moves the issue to CompletionState explicitly with the
+	// mark_merged action once the MRs/PRs are merged. Must be neither active
+	// nor terminal, so the issue is not re-dispatched and still blocks its
+	// dependents. Read-only after startup.
+	ReviewState string
 	// BacklogStates are always fetched and shown as the leftmost board column(s).
 	// Defaults to ["Backlog"] for linear, [] for github.
 	BacklogStates []string
@@ -262,6 +270,11 @@ type AgentConfig struct {
 	// override the default agent Command. Profiles can be selected per-issue
 	// from the web UI.
 	Profiles map[string]AgentProfile
+	// DefaultProfile names the profile used for regular issue dispatches that
+	// have no per-issue profile override. Empty keeps the legacy behaviour:
+	// such runs use Command and DefaultAllowedActions with no profile files.
+	// Reviewer, automation, and per-issue overrides still take precedence.
+	DefaultProfile string
 	// DepsAnalyzerProfile is the name of the agent profile used to populate
 	// the inferred dependency layer for the Deps tab. When empty, the
 	// dashboard's "Analyze dependencies" button is disabled and the Deps tab
@@ -424,6 +437,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.TerminalStates = strSliceField(tracker, "terminal_states", []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"})
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
 	cfg.Tracker.CompletionState = strField(tracker, "completion_state", "")
+	cfg.Tracker.ReviewState = strings.TrimSpace(strField(tracker, "review_state", ""))
 	defaultBacklog := []string{}
 	if cfg.Tracker.Kind == "linear" {
 		defaultBacklog = []string{"Backlog"}
@@ -486,6 +500,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
 	cfg.Agent.ReviewerProfile = strField(agent, "reviewer_profile", "")
 	cfg.Agent.DepsAnalyzerProfile = strField(agent, "deps_analyzer_profile", "")
+	cfg.Agent.DefaultProfile = strings.TrimSpace(strField(agent, "default_profile", ""))
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -38,6 +39,13 @@ var itervoxEnvAllowlist = []string{
 // Returns an error tagged "hook_timeout" on deadline exceeded, or
 // "hook_failed" on non-zero exit. The parent ctx is also respected.
 func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, logFn ...func(string)) error {
+	return RunHookWithEnv(ctx, script, workspacePath, timeoutMs, nil, logFn...)
+}
+
+// RunHookWithEnv is RunHook with per-invocation env vars (e.g.
+// ITERVOX_ISSUE_IDENTIFIER, ITERVOX_RUN_ID) layered on top of the daemon env.
+// extraEnv entries override inherited duplicates; empty values are skipped.
+func RunHookWithEnv(ctx context.Context, script, workspacePath string, timeoutMs int, extraEnv map[string]string, logFn ...func(string)) error {
 	if strings.TrimSpace(script) == "" {
 		return nil
 	}
@@ -54,7 +62,7 @@ func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, l
 	cmd.Dir = workspacePath
 	cmd.Stdout = out
 	cmd.Stderr = out
-	cmd.Env = hookEnv(os.Environ())
+	cmd.Env = withExtraEnv(hookEnv(os.Environ()), extraEnv)
 	setHookProcessGroup(cmd)
 
 	runErr := cmd.Run()
@@ -131,6 +139,29 @@ func hookEnv(base []string) []string {
 		if val, ok := os.LookupEnv(key); ok && val != "" {
 			out = append(out, key+"="+val)
 		}
+	}
+	return out
+}
+
+// withExtraEnv appends extra (sorted by key) to env, dropping any existing
+// entry for the same key so the per-invocation value wins.
+func withExtraEnv(env []string, extra map[string]string) []string {
+	keys := make([]string, 0, len(extra))
+	for k, v := range extra {
+		if v != "" {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return env
+	}
+	slices.Sort(keys)
+	out := slices.DeleteFunc(env, func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(keys, name)
+	})
+	for _, k := range keys {
+		out = append(out, k+"="+extra[k])
 	}
 	return out
 }

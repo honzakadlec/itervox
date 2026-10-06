@@ -95,6 +95,7 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
+| `review_state` | string | `""` | Separates "agent finished" from "work merged". When set, a successful implementer run moves the issue here instead of to `completion_state`, and reviewer runs apply no automatic transition: the reviewer calls `itervox action mark-merged` (profile needs the `mark_merged` action) after the MRs/PRs merge, which moves the issue to `completion_state`. The issue stays open and non-terminal meanwhile, so it is not re-dispatched and its dependents stay blocked. Requires `completion_state`; must not be in `active_states` or `terminal_states`. Empty (default) keeps the previous behaviour. |
 | `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub, Jira) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
 
@@ -244,6 +245,7 @@ These retry and rate-limit settings are also editable from the Settings dashboar
 | `switch_revert_hours` | int | `0` | TTL (in hours) after which an auto-applied profile/backend switch is reverted on the next poll cycle, returning the issue to its original profile and backend. `0` (default) disables the revert. Operator-set overrides survive — only auto-switches with a recorded `AutoSwitchedAt` timestamp are eligible. |
 | `rate_limit_error_patterns` | string[] | `[]` | Custom substrings for detecting rate-limit errors in agent stderr. Empty falls back to built-in defaults (`rate_limit_exceeded`, `rate limit`, `429`, `quota`, `too many requests`). |
 | `allow_unchecked_merge` | bool | `false` | When `false` (default), the `merge_pr` action refuses to merge on a repo with zero required checks configured (reason `unarmed_gate:...`) instead of merging with no CI coverage. Set `true` to merge anyway; the daemon still logs a loud warning. |
+| `default_profile` | string | `""` | Profile used for regular issue dispatches that have no per-issue profile selected, so automatic runs get that profile's command (model), `soul_file`/`instructions_file`, and `allowed_actions`. A profile picked in the dashboard, the reviewer, automations, and rate-limit auto-switch still take precedence. Must name an existing, enabled profile. Empty keeps the previous behaviour (`command` + `default_allowed_actions`, no profile files). |
 | `default_allowed_actions` | string[] | `[comment, comment_pr]` | Daemon-backed actions granted to worker runs that have no profile assigned, so `"$ITERVOX_BIN" action comment` works for them too. Same values as a profile's `allowed_actions`. Set `[]` to disable actions for no-profile runs. |
 
 ```yaml
@@ -320,7 +322,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `instructions_file` | string | Path to `INSTRUCTIONS.md`, relative to `WORKFLOW.md` when not absolute. Holds operational rules, checklists, and done criteria. |
 | `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field). |
 | `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
-| `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
+| `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `mark_merged`, `merge_pr`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same Liquid bindings as the main `WORKFLOW.md` prompt. Automation `instructions` are appended after the selected profile files. `agent.profiles.*.prompt` is legacy input for `itervox init --update`; schema `2` rejects it at daemon startup.
@@ -498,7 +500,14 @@ Shell commands run at lifecycle points in each issue's workspace. All hooks run 
 | `before_remove` | string | `""` | Shell command run before the workspace directory is deleted (when `workspace.auto_clear: true` or on manual removal). |
 | `timeout_ms` | int | `60000` | Maximum time allowed for any single hook to complete (60 seconds). |
 
-All hooks run via `bash -lc` in the issue workspace. Itervox does not inject any per-issue environment variables into hook processes; hooks inherit the daemon's environment as-is. `before_run` is intentionally per-attempt, not per-turn, so setup hooks do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.
+All hooks run via `bash -lc` in the issue workspace and inherit the daemon's environment, plus these per-run variables (they override inherited values of the same name):
+
+| Variable | Hooks | Value |
+|---|---|---|
+| `ITERVOX_ISSUE_IDENTIFIER` | all | The issue this workspace belongs to (e.g. `ENG-42`). |
+| `ITERVOX_RUN_ID` | `after_create`, `before_run`, `after_run` | The run ID of the current worker invocation; the same value the agent subprocess sees, and shared by all hooks of that run. Not set for `before_remove`, which runs outside a worker run. |
+
+`ITERVOX_BIN`, `ITERVOX_DAEMON_URL` and `ITERVOX_API_TOKEN` are also passed through when the daemon has them set. `before_run` is intentionally per-attempt, not per-turn, so setup hooks do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.
 
 By default `after_run` failures are logged and ignored. Set `hooks.after_run_required: true` to turn `after_run` into a per-unit completion gate: a unit whose final `after_run` hook fails does not complete, regardless of the agent's own clean exit. Use it to run `make test` (or any operator-owned verification) as part of the definition of done, complementing the CI-governed merge gate.
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,6 +41,11 @@ func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.Tracker
 	// BacklogStates has no runtime setter, so the direct cfg read stays legal.
 	active, terminal, completion := a.orch.TrackerStatesCfg()
 	allStates := deduplicateStates(a.cfg.Tracker.BacklogStates, active, terminal, completion)
+	// ReviewState is read-only after startup too; without it issues parked in
+	// review_state would vanish from the board.
+	if review := a.cfg.Tracker.ReviewState; review != "" && !slices.ContainsFunc(allStates, func(s string) bool { return strings.EqualFold(s, review) }) {
+		allStates = append(allStates, review)
+	}
 	issues, err := a.tr.FetchIssuesByStates(ctx, allStates)
 	if err != nil {
 		return nil, err

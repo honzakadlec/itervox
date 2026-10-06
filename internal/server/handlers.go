@@ -881,6 +881,27 @@ func (s *Server) handleAgentMoveState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleAgentMarkMerged lets an agent (typically the reviewer) record that the
+// issue's MRs/PRs have merged, moving the issue to completion_state. This is
+// the only path out of tracker.review_state besides a manual move.
+func (s *Server) handleAgentMarkMerged(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.validateAgentActionRequest(w, r, config.AgentActionMarkMerged); !ok {
+		return
+	}
+	identifier := chi.URLParam(r, "identifier")
+	ctx := WithIssueStatusSource(r.Context(), IssueStatusSourceAgent)
+	state, err := s.client.MarkIssueMerged(ctx, identifier)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
+		return
+	}
+	select {
+	case s.refreshChan <- struct{}{}:
+	default:
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
+}
+
 func (s *Server) handleAgentProvideInput(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.validateAgentActionRequest(w, r, config.AgentActionProvideInput); !ok {
 		return

@@ -168,14 +168,16 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   URL, schema version, workflow path, capacity, queue pressure, dependency audit
   summary, input-required count, and last notable error live here. Never commit.
 - **`.itervox/handoff/<ISO8601>_<role>.md` is the agent pipeline handoff dir.**
-  Each worker run writes a Markdown deliverable at this path on the issue's
-  worktree branch; the orchestrator pre-renders all prior handoffs (sorted
+  Each worker run writes a Markdown deliverable at this path in the issue's
+  worktree; the orchestrator pre-renders all prior handoffs (sorted
   chronologically by filename prefix, budget-truncated oldest-first) into every
   subsequent worker's prompt as a `## Prior Agent Handoffs` block. Liquid bindings
   `{{ run.timestamp }}` and `{{ run.handoff_path }}` expose the current run's
-  metadata to the agent. The directory is committable via a `.gitignore`
-  carve-out (`!.itervox/handoff/`, `!.itervox/handoff/**`, added alongside the
-  agents carve-out by `itervox init` and `itervox init --update`). Non-success
+  metadata to the agent. Handoffs are read from the worktree on disk and are
+  NOT committed: `itervox init` writes `handoff/` into `.itervox/.gitignore` and
+  `.itervox/handoff/` into the root `.gitignore`; `itervox init --update` also
+  drops the legacy `!.itervox/handoff/` carve-outs. Committed handoffs would leak
+  into integration/release merges and into unrelated issues' prompts. Non-success
   worker exits (`TerminalFailed`, `TerminalStalled`) rename the in-flight file
   to `<basename>.partial.md` so partials are visible to the next agent without
   being mistaken for completed work; `TerminalInputRequired` does not rename

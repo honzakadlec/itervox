@@ -2,15 +2,12 @@ package github
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/tracker"
 )
-
-var blockerRe = regexp.MustCompile(`(?i)blocked\s+by\s+#(\d+)`)
 
 // normalizeIssue converts a raw GitHub REST API issue map to a domain.Issue.
 // derivedState is the computed state string (from label/closed logic).
@@ -84,10 +81,9 @@ func extractBlockers(raw map[string]any) []domain.BlockerRef {
 	if !ok || body == "" {
 		return nil
 	}
-	matches := blockerRe.FindAllStringSubmatch(body, -1)
-	result := make([]domain.BlockerRef, 0, len(matches))
-	for _, m := range matches {
-		num := m[1]
+	nums := tracker.ParseHashBlockers(body)
+	result := make([]domain.BlockerRef, 0, len(nums))
+	for _, num := range nums {
 		id := num
 		ident := "#" + num
 		ref := domain.BlockerRef{

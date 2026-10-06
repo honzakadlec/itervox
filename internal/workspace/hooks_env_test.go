@@ -56,3 +56,35 @@ func TestHookEnvOmitsItervoxBinWhenUnset(t *testing.T) {
 		}
 	}
 }
+
+func TestRunHookReceivesIssueIdentifier(t *testing.T) {
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "captured.txt")
+	// A stale inherited value must lose to the per-run value.
+	t.Setenv("ITERVOX_ISSUE_IDENTIFIER", "STALE-1")
+
+	script := `printf '%s|%s' "$ITERVOX_ISSUE_IDENTIFIER" "$ITERVOX_RUN_ID" > ` + outPath
+	env := map[string]string{
+		"ITERVOX_ISSUE_IDENTIFIER": "ENG-42",
+		"ITERVOX_RUN_ID":           "run-abc",
+	}
+	if err := RunHookWithEnv(context.Background(), script, tmp, 5000, env); err != nil {
+		t.Fatalf("RunHookWithEnv: %v", err)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", outPath, err)
+	}
+	if got := string(data); got != "ENG-42|run-abc" {
+		t.Errorf("hook saw %q, want ENG-42|run-abc", got)
+	}
+}
+
+func TestWithExtraEnvSkipsEmptyValues(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "ITERVOX_RUN_ID=old"}
+	env := withExtraEnv(base, map[string]string{"ITERVOX_RUN_ID": "", "ITERVOX_ISSUE_IDENTIFIER": "ENG-1"})
+	want := []string{"PATH=/usr/bin", "ITERVOX_RUN_ID=old", "ITERVOX_ISSUE_IDENTIFIER=ENG-1"}
+	if strings.Join(env, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v, want %v", env, want)
+	}
+}

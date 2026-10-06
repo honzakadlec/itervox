@@ -12,8 +12,9 @@ import (
 
 // HandoffDirRelPath is the path (relative to the workspace root) where
 // per-issue agent handoff files are stored. The directory is created lazily
-// by the first agent that writes into it; it is committable via a .gitignore
-// carve-out patched by `itervox init` and `itervox init --update`.
+// by the first agent that writes into it and read back from the workspace on
+// disk. It is gitignored by `itervox init` and `itervox init --update` so
+// handoffs never travel with the issue branch into integration merges.
 const HandoffDirRelPath = ".itervox/handoff"
 
 // DefaultHandoffBudgetBytes caps the prerendered prior-handoff block injected

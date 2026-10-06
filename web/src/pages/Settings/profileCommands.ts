@@ -47,6 +47,12 @@ export const AGENT_ACTION_OPTIONS = [
     description: 'Open a new issue in the profile’s configured tracker column/state.',
   },
   {
+    id: 'mark_merged',
+    label: 'Mark merged',
+    description:
+      'Record that the issue’s MRs/PRs are merged and move the issue to the completion state. The way out of tracker.review_state.',
+  },
+  {
     id: 'merge_pr',
     label: 'Merge PR',
     description:

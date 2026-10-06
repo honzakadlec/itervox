@@ -80,10 +80,10 @@ func writeFileIfMissing(path string, content string) error {
 }
 
 // finalizeItervoxGitignore writes the .itervox/.gitignore that keeps runtime
-// files out of git, AND patches the project root .gitignore to carve-out
-// agent + handoff dirs when the root broadly ignores `.itervox/`. The latter
-// is a no-op when the root has no `.itervox/` blacklist (the common case for
-// fresh `itervox init` projects).
+// files (including agent handoffs) out of git, AND patches the project root
+// .gitignore: it carves out the agents dir when the root broadly ignores
+// `.itervox/`, and always ignores `.itervox/handoff/` so handoffs stay out
+// of git even when the nested .itervox/.gitignore is never committed.
 //
 // `itervoxDir` is the absolute path to the project's `.itervox/` directory.
 func finalizeItervoxGitignore(itervoxDir string) error {
@@ -101,7 +101,7 @@ func ensureItervoxGitignore(itervoxDir string) error {
 		return fmt.Errorf("itervox init: create %s: %w", itervoxDir, err)
 	}
 	path := filepath.Join(itervoxDir, ".gitignore")
-	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "/*.json", "bin/", "*.db"}
+	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "/*.json", "bin/", "*.db", "handoff/"}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("itervox init: read %s: %w", path, err)
@@ -255,7 +255,7 @@ Be direct, evidence-driven, and explicit about blockers.
 // renames the file to `<basename>.partial.md` if the worker exits with a
 // non-success terminal reason.
 const handoffProtocolSection = `## Handoff Protocol
-- The orchestrator prepends a "## Prior Agent Handoffs" block to your prompt with every prior agent's deliverable on this issue's branch, in chronological order. Read it before doing any work — it captures research findings, design decisions, and prior attempts.
+- The orchestrator prepends a "## Prior Agent Handoffs" block to your prompt with every prior agent's deliverable in this issue's workspace, in chronological order. Read it before doing any work — it captures research findings, design decisions, and prior attempts.
 - The orchestrator also passes a "## Run Context" block with two values: ` + "`run.timestamp`" + ` and ` + "`run.handoff_path`" + `.
 - Before exiting, write a concise Markdown deliverable to ` + "`run.handoff_path`" + ` summarizing what you did, key decisions, and anything the next agent on this branch needs to know. Keep it scoped — a few hundred words is usually enough.
 - Do not edit handoff files authored by prior agents. Add your own; the chronological order is the audit trail.

@@ -462,3 +462,57 @@ automations:
 
 	require.NoError(t, config.ValidateDispatch(cfg))
 }
+
+func TestLoadDefaultProfileAbsentIsEmpty(t *testing.T) {
+	path := workflowWithContent(t, minimalV2WithProfileFiles(t, `agent:
+  profiles:
+    implementer:
+      command: claude
+`))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Empty(t, cfg.Agent.DefaultProfile)
+	require.NoError(t, config.ValidateDispatch(cfg))
+}
+
+func TestValidateDispatchAcceptsValidDefaultProfile(t *testing.T) {
+	path := workflowWithContent(t, minimalV2WithProfileFiles(t, `agent:
+  default_profile: implementer
+  profiles:
+    implementer:
+      command: claude
+`))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	require.NoError(t, config.ValidateDispatch(cfg))
+	assert.Equal(t, "implementer", cfg.Agent.DefaultProfile)
+}
+
+func TestValidateDispatchRejectsUnknownDefaultProfile(t *testing.T) {
+	path := workflowWithContent(t, minimalV2WithProfileFiles(t, `agent:
+  default_profile: implementer
+  profiles:
+    qa:
+      command: claude
+`))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.ErrorIs(t, config.ValidateDispatch(cfg), config.ErrDefaultProfileNotFound)
+}
+
+func TestValidateDispatchRejectsDisabledDefaultProfile(t *testing.T) {
+	path := workflowWithContent(t, minimalV2WithProfileFiles(t, `agent:
+  default_profile: implementer
+  profiles:
+    implementer:
+      command: claude
+      enabled: false
+`))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.ErrorIs(t, config.ValidateDispatch(cfg), config.ErrDefaultProfileDisabled)
+}

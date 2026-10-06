@@ -450,15 +450,25 @@ func patchRootGitignoreForAgents(projectDir string) error {
 		return fmt.Errorf("itervox init --update: read %s: %w", path, err)
 	}
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	changed := false
+	// Handoffs are runtime notes read from the issue worktree on disk.
+	// Committing them leaks every issue's handoffs into integration/release
+	// merges and into the prompts of unrelated issues branched from there,
+	// so drop the carve-outs older inits wrote.
+	var lines []string
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		switch strings.TrimSpace(line) {
+		case "!.itervox/handoff/", "!.itervox/handoff/**":
+			changed = true
+			continue
+		}
+		lines = append(lines, line)
+	}
 	if rootGitignoreHidesAgents(text) {
 		needed := []string{
 			"!.itervox/",
 			"!.itervox/agents/",
 			"!.itervox/agents/**",
-			"!.itervox/handoff/",
-			"!.itervox/handoff/**",
 		}
 		for _, line := range needed {
 			if !containsLine(lines, line) {
@@ -466,6 +476,10 @@ func patchRootGitignoreForAgents(projectDir string) error {
 				changed = true
 			}
 		}
+	}
+	if !containsLine(lines, ".itervox/handoff/") {
+		lines = append(lines, ".itervox/handoff/")
+		changed = true
 	}
 	// gaps_11 G-19 — migration backups written by `itervox init --update`
 	// must never be committed; ensure the ignore entry exists (idempotent).

@@ -71,7 +71,8 @@ export function DetailChip({
 }
 
 function permissionTone(action: string): 'neutral' | 'warning' | 'danger' {
-  if (action === 'create_issue' || action === 'move_state') return 'danger';
+  if (action === 'create_issue' || action === 'move_state' || action === 'mark_merged')
+    return 'danger';
   if (action === 'comment_pr' || action === 'provide_input') return 'warning';
   return 'neutral';
 }
@@ -86,6 +87,8 @@ function permissionTitle(action: string): string {
       return 'Can create tracker issues.';
     case 'move_state':
       return 'Can move tracker issue state.';
+    case 'mark_merged':
+      return 'Can mark the issue merged (moves it to the completion state).';
     default:
       return 'Can comment on tracker issues.';
   }

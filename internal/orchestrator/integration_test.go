@@ -1264,3 +1264,178 @@ func TestRecoveredInputRequiredDispatchesMatchingAutomations(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoveredInputRequiredUsesDefaultProfile(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.DefaultProfile = "implementer"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"implementer": {Command: "claude --model implementer-model", Backend: "claude"},
+	}
+
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	issue.Comments = []domain.Comment{
+		{
+			ID:         "q1",
+			AuthorID:   "itervox",
+			AuthorName: "Itervox",
+			Body:       "🤖 **Agent needs your input**\n\nShould I wait for the blocker?\n\n---\n_Reply in the tracker or via the Itervox dashboard to continue._",
+		},
+	}
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{issue},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+
+	orch := orchestrator.New(cfg, mt, &succeedOnceRunner{}, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	deadline := time.After(3 * time.Second)
+	for {
+		if entry, ok := orch.Snapshot().InputRequiredIssues["ENG-1"]; ok {
+			assert.Equal(t, "implementer", entry.ProfileName,
+				"tracker-recovered entry must carry the profile a fresh dispatch would use")
+			assert.Equal(t, "claude --model implementer-model", entry.Command,
+				"tracker-recovered entry must carry the profile command, not bare agent.command")
+			assert.Equal(t, "claude", entry.Backend)
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("input-required entry was not recovered from tracker comment; snap=%+v", orch.Snapshot())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+type commandRecordingRunner struct {
+	mu       sync.Mutex
+	commands []string
+}
+
+func (r *commandRecordingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, _, _ string, _, _ int) (agent.TurnResult, error) {
+	r.mu.Lock()
+	r.commands = append(r.commands, command)
+	r.mu.Unlock()
+	return agent.TurnResult{}, nil
+}
+
+func (r *commandRecordingRunner) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.commands...)
+}
+
+func TestPersistedInputRequiredWithoutProfileResumesWithDefaultProfile(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.Command = "claude --model bare-default"
+	cfg.Agent.DefaultProfile = "implementer"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"implementer": {Command: "claude --model implementer-model", Backend: "claude"},
+	}
+
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{issue},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+
+	// Shape written by an older daemon that rehydrated the entry from a
+	// tracker comment: no session, profile, command, or backend.
+	irFile := filepath.Join(t.TempDir(), "input_required.json")
+	require.NoError(t, os.WriteFile(irFile, []byte(`{"awaiting":{"ENG-1":{"issue_id":"id1","identifier":"ENG-1","session_id":"","context":"Should I wait?","backend":"","command":"","queued_at":"2026-10-06T11:58:42+02:00"}}}`), 0o600))
+
+	runner := &commandRecordingRunner{}
+	orch := orchestrator.New(cfg, mt, runner, nil)
+	orch.SetInputRequiredFile(irFile)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	runDone := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(runDone)
+	}()
+	defer func() { cancel(); <-runDone }()
+
+	deadline := time.After(3 * time.Second)
+	for {
+		if _, ok := orch.Snapshot().InputRequiredIssues["ENG-1"]; ok {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("persisted input-required entry was not loaded; snap=%+v", orch.Snapshot())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	require.True(t, orch.ProvideInput("ENG-1", "blocker merged, go ahead"))
+
+	for {
+		if cmds := runner.snapshot(); len(cmds) > 0 {
+			assert.Contains(t, cmds[0], "implementer-model",
+				"resume of a profile-less persisted entry must use agent.default_profile")
+			assert.NotContains(t, cmds[0], "bare-default")
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("resume never ran; snap=%+v", orch.Snapshot())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// TestWorkerHooksReceiveIssueIdentifierAndRunID verifies the worker threads
+// ITERVOX_ISSUE_IDENTIFIER and ITERVOX_RUN_ID into after_create, before_run
+// and after_run, with one run ID shared across the hooks of a run.
+func TestWorkerHooksReceiveIssueIdentifierAndRunID(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 1
+	cfg.Tracker.CompletionState = "Done"
+	outDir := t.TempDir()
+	capture := func(name string) string {
+		return `printf '%s|%s\n' "$ITERVOX_ISSUE_IDENTIFIER" "$ITERVOX_RUN_ID" >> ` + filepath.Join(outDir, name)
+	}
+	cfg.Hooks.AfterCreate = capture("after_create")
+	cfg.Hooks.BeforeRun = capture("before_run")
+	cfg.Hooks.AfterRun = capture("after_run")
+
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{makeIssue("id1", "ENG-1", "In Progress", nil, nil)},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+	wm := &stableWorkspaceProvider{path: filepath.Join(t.TempDir(), "workspace")}
+	orch := orchestrator.New(cfg, mt, &succeedOnceRunner{}, wm)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	read := func(name string) string {
+		b, _ := os.ReadFile(filepath.Join(outDir, name))
+		return strings.TrimSpace(string(b))
+	}
+	deadline := time.After(4 * time.Second)
+	for read("after_run") == "" {
+		select {
+		case <-deadline:
+			t.Fatalf("after_run hook did not run; snap=%+v", orch.Snapshot())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	afterCreate, beforeRun, afterRun := read("after_create"), read("before_run"), read("after_run")
+	identifier, runID, ok := strings.Cut(beforeRun, "|")
+	require.True(t, ok, "before_run output %q", beforeRun)
+	assert.Equal(t, "ENG-1", identifier)
+	assert.NotEmpty(t, runID, "before_run must receive ITERVOX_RUN_ID")
+	assert.Equal(t, beforeRun, afterCreate, "after_create must see the same identifier and run ID")
+	assert.Equal(t, beforeRun, afterRun, "after_run must see the same identifier and run ID")
+}

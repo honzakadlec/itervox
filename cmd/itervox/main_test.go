@@ -620,7 +620,7 @@ func TestFinalizeItervoxGitignoreWritesAgentAndHandoffCarveOuts(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)
 	// Simulate a project whose root .gitignore already broadly hides .itervox/
-	// (the case where the carve-outs MATTER for handoff committability).
+	// (the case where the carve-outs MATTER for agents committability).
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".itervox/\n"), 0o644))
 
 	require.NoError(t, finalizeItervoxGitignore(filepath.Join(dir, ".itervox")))
@@ -629,12 +629,19 @@ func TestFinalizeItervoxGitignoreWritesAgentAndHandoffCarveOuts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(rootIgnore), "!.itervox/agents/**",
 		"agents carve-out must be present after init's gitignore finalization")
-	assert.Contains(t, string(rootIgnore), "!.itervox/handoff/**",
-		"handoff carve-out must be present after init's gitignore finalization")
+	assert.NotContains(t, string(rootIgnore), "!.itervox/handoff/",
+		"handoffs must never be carved out of the root .gitignore")
+	assert.Contains(t, string(rootIgnore), "\n.itervox/handoff/\n",
+		"handoffs must be ignored by the root .gitignore")
+
+	nestedIgnore, err := os.ReadFile(filepath.Join(dir, ".itervox", ".gitignore"))
+	require.NoError(t, err)
+	assert.Contains(t, string(nestedIgnore), "\nhandoff/\n",
+		"handoffs must be ignored by .itervox/.gitignore")
 }
 
 // G18 companion: when the root .gitignore does NOT broadly ignore .itervox/,
-// the patch is a no-op — the root file should be unchanged.
+// no carve-outs are added — only the handoff ignore is appended.
 func TestFinalizeItervoxGitignoreNoOpWhenRootDoesNotIgnoreItervox(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("node_modules/\n*.log\n"), 0o644))
@@ -645,8 +652,25 @@ func TestFinalizeItervoxGitignoreNoOpWhenRootDoesNotIgnoreItervox(t *testing.T) 
 	require.NoError(t, err)
 	// Carve-outs should not be added since the root doesn't ignore .itervox/.
 	assert.NotContains(t, string(rootIgnore), "!.itervox")
+	assert.Contains(t, string(rootIgnore), "\n.itervox/handoff/\n")
 	// Original contents preserved.
 	assert.Contains(t, string(rootIgnore), "node_modules/")
+}
+
+// Older inits carved handoffs out of the root .gitignore; --update must drop
+// those carve-outs so handoffs stop being committed to issue branches.
+func TestPatchRootGitignoreForAgentsDropsLegacyHandoffCarveOut(t *testing.T) {
+	dir := t.TempDir()
+	legacy := ".itervox/\n!.itervox/\n!.itervox/agents/\n!.itervox/agents/**\n!.itervox/handoff/\n!.itervox/handoff/**\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(legacy), 0o644))
+
+	require.NoError(t, patchRootGitignoreForAgents(dir))
+
+	rootIgnore, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(rootIgnore), "!.itervox/handoff/")
+	assert.Contains(t, string(rootIgnore), "!.itervox/agents/**")
+	assert.Contains(t, string(rootIgnore), "\n.itervox/handoff/\n")
 }
 
 func TestPatchRootGitignoreForAgentsUnignoresParentDirectory(t *testing.T) {
@@ -667,8 +691,8 @@ func TestPatchRootGitignoreForAgentsUnignoresParentDirectory(t *testing.T) {
 			assert.Contains(t, string(rootIgnore), "!.itervox/")
 			assert.Contains(t, string(rootIgnore), "!.itervox/agents/")
 			assert.Contains(t, string(rootIgnore), "!.itervox/agents/**")
-			assert.Contains(t, string(rootIgnore), "!.itervox/handoff/")
-			assert.Contains(t, string(rootIgnore), "!.itervox/handoff/**")
+			assert.NotContains(t, string(rootIgnore), "!.itervox/handoff/")
+			assert.Contains(t, string(rootIgnore), "\n.itervox/handoff/\n")
 		})
 	}
 }
@@ -1363,6 +1387,68 @@ func TestOrchestratorAdapterUpdateIssueState_FindsIssueOutsideConfiguredStates(t
 	require.NoError(t, fetchErr)
 	require.NotNil(t, fetched)
 	assert.Equal(t, "Done", fetched.State)
+}
+
+func TestOrchestratorAdapterMarkIssueMerged_MovesReviewIssueToCompletion(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			ActiveStates:    []string{"Todo", "In Progress"},
+			TerminalStates:  []string{"Done"},
+			CompletionState: "Done",
+			ReviewState:     "Review",
+		},
+	}
+	issue := tracker.GenerateDemoIssues(1)[0]
+	issue.State = "Review"
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{orch: orch, logBuf: logbuffer.New(), cfg: cfg, tr: mt}
+
+	state, err := adapter.MarkIssueMerged(context.Background(), issue.Identifier)
+
+	require.NoError(t, err)
+	assert.Equal(t, "Done", state)
+	fetched, fetchErr := mt.FetchIssueByIdentifier(context.Background(), issue.Identifier)
+	require.NoError(t, fetchErr)
+	require.NotNil(t, fetched)
+	assert.Equal(t, "Done", fetched.State)
+}
+
+func TestOrchestratorAdapterFetchIssues_IncludesReviewState(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			ActiveStates:    []string{"Todo"},
+			TerminalStates:  []string{"Done"},
+			CompletionState: "Done",
+			ReviewState:     "Review",
+		},
+	}
+	issue := tracker.GenerateDemoIssues(1)[0]
+	issue.State = "Review"
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{orch: orch, logBuf: logbuffer.New(), cfg: cfg, tr: mt}
+
+	issues, err := adapter.FetchIssues(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, issues, 1, "issue parked in review_state must stay on the board")
+	assert.Equal(t, "Review", issues[0].State)
+}
+
+func TestOrchestratorAdapterMarkIssueMerged_ErrorsWithoutCompletionState(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}},
+	}
+	issue := tracker.GenerateDemoIssues(1)[0]
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{orch: orch, logBuf: logbuffer.New(), cfg: cfg, tr: mt}
+
+	_, err := adapter.MarkIssueMerged(context.Background(), issue.Identifier)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "completion_state is not configured")
 }
 
 func TestOrchestratorAdapterUpsertProfile_RejectsRenameCollision(t *testing.T) {

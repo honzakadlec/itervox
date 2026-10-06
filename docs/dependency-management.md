@@ -8,6 +8,15 @@ Itervox normalizes tracker blocker data into `issue.BlockedBy`.
 
 - Linear blockers come from native Linear issue relations: inverse relations of type `blocks`.
 - GitHub blockers are text-derived from the issue body using `blocked by #123` references. Comments are not parsed for blocker relationships in v0.2.0.
+- GitLab blockers combine native `is_blocked_by` issue links with the same issue-body text parsing as GitHub.
+- Both GitHub and GitLab also recognise a `## Blocked by` (or `## Depends on`) heading followed by list items that start with `#123`. The section ends at the next heading or the first non-blank line that is not a list item:
+
+  ```markdown
+  ## Blocked by
+
+  - #13
+  - #14 (route gate)
+  ```
 
 The dependency audit exposes source labels such as `tracker_relation` and `issue_text` so operators can see where blocker data came from.
 

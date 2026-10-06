@@ -162,7 +162,11 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 		// Without this guard, ReconcileTrackerStates races automation
 		// dispatch and clears state.Running before the worker exits,
 		// stranding the AutomationID/TriggerType from history (F-1).
-		if entry.Kind == "automation" {
+		// Reviewer workers (Kind=="reviewer") are exempt for the same reason:
+		// auto-review dispatches them after the implementer moved the issue to
+		// completion_state, which is usually terminal, so the gate would kill
+		// every auto-review seconds after it started.
+		if entry.Kind == "automation" || entry.Kind == "reviewer" {
 			entry.Issue.State = refreshedState
 			entry.LastEventAt = &now
 			continue
