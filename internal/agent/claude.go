@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -182,6 +183,7 @@ func (c *ClaudeRunner) RunTurn(
 	}
 
 	result, readErr := readLines(turnCtx, log, onProgress, stdout, readTimeoutMs, "claude", ParseLine)
+	result = abortOnReadError(cmd, result, readErr)
 
 	// Wait regardless of readErr so we don't leave zombie processes.
 	waitErr := cmd.Wait()
@@ -512,6 +514,28 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.WaitDelay = 5 * time.Second
 }
 
+// abortOnReadError handles readLines returning early (idle read timeout,
+// scanner error). Once readLines stops, nothing drains stdout, so a still-
+// running agent blocks on a full pipe and cmd.Wait would hang until the turn
+// timeout. Kill the process group first. Non-context read errors are also
+// recorded as FailureText so the worker does not mistake a timed-out turn
+// for a clean 0-token session end.
+func abortOnReadError(cmd *exec.Cmd, result TurnResult, readErr error) TurnResult {
+	if readErr == nil {
+		return result
+	}
+	if cmd.Cancel != nil {
+		_ = cmd.Cancel()
+	}
+	if !errors.Is(readErr, context.Canceled) && !errors.Is(readErr, context.DeadlineExceeded) {
+		result.Failed = true
+		if result.FailureText == "" {
+			result.FailureText = readErr.Error()
+		}
+	}
+	return result
+}
+
 func loginShell() string {
 	if sh := os.Getenv("SHELL"); sh != "" {
 		return sh
@@ -565,19 +589,34 @@ func readLines(ctx context.Context, log Logger, onProgress func(TurnResult), r i
 
 	readDeadline := time.Duration(readTimeoutMs) * time.Millisecond
 	var result TurnResult
+	// inFlight holds item IDs of actions that have started but not completed.
+	// A long shell command (e.g. a full test suite) is legitimately silent on
+	// stdout, so the idle deadline is suspended while any item is in flight;
+	// the turn timeout (ctx) still bounds the run.
+	inFlight := make(map[string]struct{})
 
 	for {
-		timer := time.NewTimer(readDeadline)
+		var timeoutCh <-chan time.Time
+		var timer *time.Timer
+		if len(inFlight) == 0 {
+			timer = time.NewTimer(readDeadline)
+			timeoutCh = timer.C
+		}
+		stopTimer := func() {
+			if timer != nil {
+				timer.Stop()
+			}
+		}
 		select {
 		case <-ctx.Done():
-			timer.Stop()
+			stopTimer()
 			return result, ctx.Err()
 
-		case <-timer.C:
+		case <-timeoutCh:
 			return result, fmt.Errorf("agent: read timeout after %dms idle", readTimeoutMs)
 
 		case sr := <-lineCh:
-			timer.Stop()
+			stopTimer()
 			if sr.done {
 				return result, sr.err
 			}
@@ -585,6 +624,13 @@ func readLines(ctx context.Context, log Logger, onProgress func(TurnResult), r i
 			if err != nil {
 				slog.Debug("agent: raw line", "data", string(sr.line))
 				continue
+			}
+			if ev.ItemID != "" {
+				if ev.InProgress {
+					inFlight[ev.ItemID] = struct{}{}
+				} else {
+					delete(inFlight, ev.ItemID)
+				}
 			}
 			switch ev.Type {
 			case "assistant":

@@ -124,6 +124,7 @@ func (c *CodexRunner) RunTurn(
 	}
 
 	result, readErr := readLines(turnCtx, log, onProgress, reader, readTimeoutMs, "codex", ParseCodexLine)
+	result = abortOnReadError(cmd, result, readErr)
 	if logFile != nil {
 		_ = logFile.Close()
 	}

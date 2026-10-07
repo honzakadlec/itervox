@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -625,4 +626,63 @@ func TestMultiRunnerWarnsOnUnsupportedBackend(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "warn-1", result.SessionID)
+}
+
+// ---------------------------------------------------------------------------
+// Read timeout: in-flight commands and early-return cleanup
+// ---------------------------------------------------------------------------
+
+func TestCodexRunnerInFlightCommandSuspendsReadTimeout(t *testing.T) {
+	// A long shell command (e.g. a full test suite) emits nothing on stdout
+	// between item.started and item.completed. That silence must not trip
+	// the idle read timeout.
+	started := `{"type":"item.started","item":{"id":"i0","type":"command_execution","command":"php artisan test","status":"in_progress"}}` + "\n"
+	rest := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"i0","type":"command_execution","command":"php artisan test","aggregated_output":"ok","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"done"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":2}}`,
+	}, "\n") + "\n"
+
+	dir := t.TempDir()
+	fakeExe := filepath.Join(dir, "codex")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' %s\nprintf '%%s' %s\nsleep 1\nprintf '%%s' %s\n",
+		shellLiteral(`{"type":"thread.started","thread_id":"tid-long"}`+"\n"),
+		shellLiteral(started), shellLiteral(rest))
+	require.NoError(t, os.WriteFile(fakeExe, []byte(script), 0o755))
+
+	runner := agent.NewCodexRunner()
+	result, err := runner.RunTurn(
+		context.Background(), slog.Default(), nil,
+		nil, "run tests", dir, fakeExe, "",
+		"",
+		300, 20000,
+	)
+	require.NoError(t, err)
+	assert.False(t, result.Failed)
+	assert.Equal(t, "done", result.LastText)
+}
+
+func TestCodexRunnerReadTimeoutKillsAgent(t *testing.T) {
+	// When the idle read timeout fires nothing drains stdout any more. The
+	// runner must kill the agent instead of blocking in cmd.Wait until the
+	// turn timeout, and must report the timeout as a failure.
+	dir := t.TempDir()
+	fakeExe := filepath.Join(dir, "codex")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' %s\nsleep 1\nhead -c 200000 /dev/zero | tr '\\0' 'x'\nsleep 30\n",
+		shellLiteral(`{"type":"thread.started","thread_id":"tid-idle"}`+"\n"))
+	require.NoError(t, os.WriteFile(fakeExe, []byte(script), 0o755))
+
+	runner := agent.NewCodexRunner()
+	start := time.Now()
+	result, err := runner.RunTurn(
+		context.Background(), slog.Default(), nil,
+		nil, "hello", dir, fakeExe, "",
+		"",
+		200, 20000,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read timeout")
+	assert.Less(t, time.Since(start), 10*time.Second, "runner must not wait for the turn timeout")
+	assert.True(t, result.Failed)
+	assert.Contains(t, result.FailureText, "read timeout")
 }

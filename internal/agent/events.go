@@ -33,6 +33,10 @@ type StreamEvent struct {
 	// InProgress indicates the action is still running (e.g. from item.started).
 	// Callers should log it differently from a completed action.
 	InProgress bool
+	// ItemID is the backend's identifier for a started/completed action
+	// (Codex item.id). readLines pairs started/completed events by ItemID to
+	// know when a long-running command is in flight.
+	ItemID string
 }
 
 type rawEvent struct {

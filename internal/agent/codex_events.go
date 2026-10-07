@@ -81,6 +81,7 @@ func ParseCodexLine(line []byte) (StreamEvent, error) {
 			return StreamEvent{
 				Type:       EventAssistant,
 				InProgress: true,
+				ItemID:     raw.Item.ID,
 				ToolCalls:  []ToolCall{{Name: "shell", Input: input}},
 			}, nil
 		case "collab_tool_call":
@@ -102,6 +103,7 @@ func ParseCodexLine(line []byte) (StreamEvent, error) {
 			return StreamEvent{
 				Type:       EventAssistant,
 				InProgress: true,
+				ItemID:     raw.Item.ID,
 				ToolCalls:  []ToolCall{{Name: name, Input: input}},
 			}, nil
 		default:
@@ -133,7 +135,8 @@ func ParseCodexLine(line []byte) (StreamEvent, error) {
 				return StreamEvent{}, fmt.Errorf("codex: marshal command_execution: %w", err)
 			}
 			return StreamEvent{
-				Type: EventAssistant,
+				Type:   EventAssistant,
+				ItemID: raw.Item.ID,
 				ToolCalls: []ToolCall{{
 					Name:  "shell",
 					Input: input,
@@ -158,7 +161,8 @@ func ParseCodexLine(line []byte) (StreamEvent, error) {
 				return StreamEvent{}, fmt.Errorf("codex: marshal collab_tool_call: %w", err)
 			}
 			return StreamEvent{
-				Type: EventAssistant,
+				Type:   EventAssistant,
+				ItemID: raw.Item.ID,
 				ToolCalls: []ToolCall{{
 					Name:  name,
 					Input: input,
