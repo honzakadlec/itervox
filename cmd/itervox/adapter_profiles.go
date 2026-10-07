@@ -79,6 +79,13 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		Enabled:          func() *bool { enabled := def.Enabled; return &enabled }(),
 		AllowedActions:   config.NormalizeAllowedActions(def.AllowedActions),
 		CreateIssueState: strings.TrimSpace(def.CreateIssueState),
+		// The dashboard editor does not send autoReview yet; keep the
+		// profile's WORKFLOW.md value unless the request sets it.
+		AutoReview: existingProfile.AutoReview,
+	}
+	if def.AutoReview != nil {
+		autoReview := *def.AutoReview
+		nextProfile.AutoReview = &autoReview
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {
@@ -218,8 +225,11 @@ func profileDefFromConfig(p config.AgentProfile) server.ProfileDef {
 		Enabled:          config.ProfileEnabled(p),
 		AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
 		CreateIssueState: p.CreateIssueState,
+		AutoReview:       boolPtrCopy(config.ProfileAutoReview(p)),
 	}
 }
+
+func boolPtrCopy(b bool) *bool { return &b }
 
 func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	profiles := a.orch.ProfilesCfg()

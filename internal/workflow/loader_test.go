@@ -742,3 +742,23 @@ func TestPatchTrackerFailedState_SetAndClear(t *testing.T) {
 	assert.NotContains(t, string(data), "failed_state:")
 	assert.Contains(t, string(data), "  kind: linear") // sibling preserved
 }
+
+func TestPatchProfilesBlock_WritesAutoReviewFalse(t *testing.T) {
+	content := "---\nagent:\n  command: claude\n---\n\nBody.\n"
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
+
+	off, on := false, true
+	profiles := map[string]workflow.ProfileEntry{
+		"tester":      {Command: "claude --model sonnet", AutoReview: &off},
+		"implementer": {Command: "claude", AutoReview: &on},
+	}
+	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "    tester:\n      command: claude --model sonnet\n      auto_review: false\n")
+	assert.Equal(t, 1, strings.Count(got, "auto_review:"), "default (true) must not be written")
+}

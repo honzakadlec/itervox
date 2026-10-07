@@ -85,7 +85,7 @@ Pluggable agent backends — Claude Code and Codex are supported today; new back
 - **Project filters** — filter issues by Linear project when working across multiple repos.
 - **Stall detection** — no output inside the stall window? Worker is killed and retried automatically.
 - **Auto-pause on open PR** — an existing open PR is detected and the agent pauses to prevent duplicate work.
-- **Per-issue profile overrides** — route different issue types through different profiles, models, and machines.
+- **Per-issue profile overrides** — route different issue types through different profiles, models, and machines, from the dashboard or with a `profile::<name>` tracker label.
 - **API auth** — protect the local HTTP server with a shared token.
 
 ---

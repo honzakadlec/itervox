@@ -200,7 +200,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 		if ws.CreatedNow && !skipFreshDispatchSetup {
 			hookLog := o.hookLogFn(issue.Identifier, runLogID)
-			if err := workspace.RunHookWithEnv(ctx, o.cfg.Hooks.AfterCreate, wsPath, o.cfg.Hooks.TimeoutMs, hookRunEnv(issue.Identifier, runLogID), hookLog); err != nil {
+			if err := workspace.RunHookWithEnv(ctx, o.cfg.Hooks.AfterCreate, wsPath, o.cfg.Hooks.TimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName), hookLog); err != nil {
 				slog.Warn("worker: after_create hook failed, removing workspace so next retry re-runs it",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 				if o.logBuf != nil {
@@ -309,7 +309,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// attempt without wiping Claude's work between turns.
 	if wsPath != "" && !skipFreshDispatchSetup {
 		hookLog := o.hookLogFn(issue.Identifier, runLogID)
-		if err := workspace.RunHookWithEnv(ctx, beforeRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID), hookLog); err != nil {
+		if err := workspace.RunHookWithEnv(ctx, beforeRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName), hookLog); err != nil {
 			slog.Warn("worker: before_run hook failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 			if o.logBuf != nil {
@@ -424,7 +424,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			// a loop — defer would not fire until runWorker returns (GO-R10-2).
 			if wsPath != "" {
 				hookCtx, hookCancel := context.WithTimeout(context.Background(), hookFallbackTimeout)
-				if hookErr := workspace.RunHookWithEnv(hookCtx, afterRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID), o.hookLogFn(issue.Identifier, runLogID)); hookErr != nil {
+				if hookErr := workspace.RunHookWithEnv(hookCtx, afterRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName), o.hookLogFn(issue.Identifier, runLogID)); hookErr != nil {
 					slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issue.ID, "error", hookErr)
 				}
 				hookCancel()
@@ -574,7 +574,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 		// after_run hook. Best-effort by default; the final turn's result
 		// becomes the per-unit gate when hooks.after_run_required is set.
-		lastAfterRunErr = o.runAfterHook(ctx, afterRunHook, hookTimeoutMs, wsPath, issue.ID, issue.Identifier, runLogID)
+		lastAfterRunErr = o.runAfterHook(ctx, afterRunHook, hookTimeoutMs, wsPath, issue.ID, issue.Identifier, runLogID, profileName)
 
 		// Track the current git branch after each turn so retried workers can
 		// resume from the same branch. Only fires when the agent has switched to
@@ -996,6 +996,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 	if completionState != "" && ctx.Err() == nil && !automationRun {
+		if movedTo := o.issueMovedOutOfActiveStates(ctx, issue); movedTo != "" {
+			// The agent (move_state / mark_merged) or a human already moved
+			// the issue out of active_states; applying completion_state now
+			// would overwrite that decision (e.g. re-label a closed issue).
+			slog.Info("worker: issue already moved out of active states, skipping completion transition",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "state", movedTo, "skipped_target", completionState)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", fmt.Sprintf("worker: issue already in %q, not moving it to %q", movedTo, completionState), runLogID))
+			}
+			completionState = ""
+		}
+	}
+	if completionState != "" && ctx.Err() == nil && !automationRun {
 		slog.Info("worker: transitioning to completion state",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "target_state", completionState)
 		if o.logBuf != nil {
@@ -1305,24 +1318,53 @@ func buildInputRequiredExitRunEntry(
 // runAfterHook executes the after_run hook and returns its error. Callers on
 // the best-effort path log and ignore the result; when hooks.after_run_required
 // is set, the success path uses the final turn's result as a per-unit gate.
-func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs int, wsPath, issueID, identifier, sessionID string) error {
+func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs int, wsPath, issueID, identifier, sessionID, profileName string) error {
 	if wsPath == "" {
 		return nil
 	}
-	if err := workspace.RunHookWithEnv(ctx, hook, wsPath, timeoutMs, hookRunEnv(identifier, sessionID), o.hookLogFn(identifier, sessionID)); err != nil {
+	if err := workspace.RunHookWithEnv(ctx, hook, wsPath, timeoutMs, hookRunEnv(identifier, sessionID, profileName), o.hookLogFn(identifier, sessionID)); err != nil {
 		slog.Warn("worker: after_run hook failed", "issue_id", issueID, "error", err)
 		return err
 	}
 	return nil
 }
 
+// issueMovedOutOfActiveStates re-fetches the issue after a successful run
+// and returns its state when something (the agent via move_state /
+// mark_merged, or a human) already moved it out of active_states. Returns ""
+// when it is still active, its state is unknown, or the fetch fails — the
+// caller then applies the usual completion transition.
+func (o *Orchestrator) issueMovedOutOfActiveStates(ctx context.Context, issue domain.Issue) string {
+	fetchCtx, cancel := context.WithTimeout(ctx, postRunTimeout)
+	defer cancel()
+	refreshed, err := o.tracker.FetchIssueStatesByIDs(fetchCtx, []string{issue.ID})
+	if err != nil {
+		slog.Warn("worker: post-run state refresh failed, applying completion transition",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
+		return ""
+	}
+	if len(refreshed) == 0 || refreshed[0].State == "" {
+		return ""
+	}
+	o.cfgMu.RLock()
+	activeStates := append([]string{}, o.cfg.Tracker.ActiveStates...)
+	o.cfgMu.RUnlock()
+	if isActiveState(refreshed[0].State, State{ActiveStates: activeStates}) {
+		return ""
+	}
+	return refreshed[0].State
+}
+
 // hookRunEnv is the per-run env passed to after_create, before_run and
 // after_run hooks so they can address the issue and correlate with the run
 // (same names the agent subprocess receives via the action bridge).
-func hookRunEnv(identifier, runID string) map[string]string {
+// ITERVOX_PROFILE is the run's resolved profile (empty = bare agent.command),
+// so hooks can skip setup only some profiles need.
+func hookRunEnv(identifier, runID, profileName string) map[string]string {
 	return map[string]string{
 		"ITERVOX_ISSUE_IDENTIFIER": identifier,
 		"ITERVOX_RUN_ID":           runID,
+		"ITERVOX_PROFILE":          profileName,
 	}
 }
 

@@ -148,6 +148,10 @@ type AgentProfile struct {
 	// CreateIssueState is the tracker state/column used when the create_issue
 	// action is allowed for this profile.
 	CreateIssueState string
+	// AutoReview, when false, stops a successful run of this profile from
+	// queueing the reviewer even with agent.auto_review on (ops/test profiles
+	// that produce no code). Nil means true; read via ProfileAutoReview.
+	AutoReview *bool
 }
 
 // AgentConfig holds agent runner settings.
@@ -693,6 +697,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				Enabled:          boolPtr(boolField(m, "enabled", true)),
 				AllowedActions:   allowed,
 				CreateIssueState: strField(m, "create_issue_state", ""),
+				AutoReview:       boolPtr(boolField(m, "auto_review", true)),
 			}
 			continue
 		}
@@ -707,6 +712,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			Enabled:          boolPtr(boolField(m, "enabled", true)),
 			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
 			CreateIssueState: strField(m, "create_issue_state", ""),
+			AutoReview:       boolPtr(boolField(m, "auto_review", true)),
 		}
 	}
 	if len(profiles) == 0 {
@@ -741,6 +747,12 @@ func boolPtr(v bool) *bool {
 
 func ProfileEnabled(profile AgentProfile) bool {
 	return profile.Enabled == nil || *profile.Enabled
+}
+
+// ProfileAutoReview reports whether a successful run of the profile may queue
+// the reviewer. Nil AutoReview means true.
+func ProfileAutoReview(profile AgentProfile) bool {
+	return profile.AutoReview == nil || *profile.AutoReview
 }
 
 // parseAvailableModels parses the agent.available_models YAML field.

@@ -50,7 +50,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `terminal_states` | []string | no | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | States treated as permanently done |
 | `backlog_states` | []string | no | Linear: `["Backlog"]`, GitHub: `[]` | Always fetched; shown as leftmost Kanban column(s) |
 | `working_state` | string | no | `"In Progress"` | State assigned when an agent starts. Empty string disables the transition |
-| `completion_state` | string | no | `""` | State assigned on successful completion. When set, the issue leaves `active_states` so it is not re-dispatched |
+| `completion_state` | string | no | `""` | State assigned on successful completion. When set, the issue leaves `active_states` so it is not re-dispatched. Skipped when the issue already left `active_states` during the run (agent `move_state`/`mark_merged` or a human) |
 | `failed_state` | string | no | `""` | State assigned when max retries are exhausted. When empty, failed issues are paused instead |
 
 ---
@@ -119,6 +119,9 @@ script.
 | `enabled` | Optional boolean. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | Optional list of daemon-backed actions: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | Required when `allowed_actions` includes `create_issue`; the tracker state/column for follow-up issues. |
+| `auto_review` | Optional boolean, default `true`. `false` stops a successful run of this profile from queueing the reviewer even with `agent.auto_review: true`. |
+
+An issue labelled `profile::<name>` is dispatched with profile `<name>`. Precedence: dashboard/automatic per-issue profile, then the label, then `default_profile`; an unknown or disabled name is logged and ignored. Hooks receive the run's profile as `ITERVOX_PROFILE`.
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same
 Liquid bindings as the main workflow prompt. Automation `instructions` are

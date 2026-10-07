@@ -1245,3 +1245,21 @@ func TestTrackerCommentVisibilityGroupExplicit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "DB INTERNAL", cfg.Tracker.CommentVisibilityGroup)
 }
+
+func TestParseAgentProfiles_AutoReview(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    implementer:
+      command: claude --model claude-sonnet-4-6
+    tester:
+      command: claude --model claude-sonnet-4-6
+      auto_review: false
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Agent.Profiles)
+	assert.True(t, config.ProfileAutoReview(cfg.Agent.Profiles["implementer"]),
+		"auto_review must default to true when absent")
+	assert.False(t, config.ProfileAutoReview(cfg.Agent.Profiles["tester"]))
+}

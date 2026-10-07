@@ -94,7 +94,7 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. For Jira, these are workflow status names (e.g. `"In Progress"`), matched literally — no JQL authoring needed. |
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
-| `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
+| `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. Skipped when the issue already left `active_states` during the run (the agent used `move_state`/`mark_merged`, or a human moved it), so an explicit move is never overwritten. |
 | `review_state` | string | `""` | Separates "agent finished" from "work merged". When set, a successful implementer run moves the issue here instead of to `completion_state`, and reviewer runs apply no automatic transition: the reviewer calls `itervox action mark-merged` (profile needs the `mark_merged` action) after the MRs/PRs merge, which moves the issue to `completion_state`. The issue stays open and non-terminal meanwhile, so it is not re-dispatched and its dependents stay blocked. Requires `completion_state`; must not be in `active_states` or `terminal_states`. Empty (default) keeps the previous behaviour. |
 | `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub, Jira) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
@@ -315,6 +315,8 @@ If `available_models` is empty or missing, the dashboard falls back to a built-i
 
 Named profiles let you configure alternative agent commands selectable per-issue from the web dashboard. Each profile must specify a `command`. In schema `2`, profile text lives in files under `.itervox/agents/<profile>/`; `WORKFLOW.md` stores references to those files.
 
+An issue can also pick its profile from the tracker: a label `profile::<name>` (case-insensitive) dispatches it with profile `<name>`. On GitLab `::` makes it a scoped label, so an issue carries at most one. Precedence: a profile set from the dashboard (or an automatic switch) wins, then the label, then `agent.default_profile`. A label naming an unknown or disabled profile is logged and ignored.
+
 | Field | Type | Description |
 |---|---|---|
 | `command` | string | CLI command for this profile (e.g. `"claude --model claude-haiku-4-5-20251001"`). |
@@ -324,6 +326,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `mark_merged`, `merge_pr`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |
+| `auto_review` | boolean | Optional, default `true`. Set `false` so a successful run of this profile never queues the reviewer, even with `agent.auto_review: true` (e.g. a tester or ops profile that produces no code). |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same Liquid bindings as the main `WORKFLOW.md` prompt. Automation `instructions` are appended after the selected profile files. `agent.profiles.*.prompt` is legacy input for `itervox init --update`; schema `2` rejects it at daemon startup.
 
@@ -505,6 +508,7 @@ All hooks run via `bash -lc` in the issue workspace and inherit the daemon's env
 | Variable | Hooks | Value |
 |---|---|---|
 | `ITERVOX_ISSUE_IDENTIFIER` | all | The issue this workspace belongs to (e.g. `ENG-42`). |
+| `ITERVOX_PROFILE` | `after_create`, `before_run`, `after_run` | The run's resolved agent profile (empty when the run uses bare `agent.command`). Lets a hook skip setup only some profiles need. Not set for `before_remove`. |
 | `ITERVOX_RUN_ID` | `after_create`, `before_run`, `after_run` | The run ID of the current worker invocation; the same value the agent subprocess sees, and shared by all hooks of that run. Not set for `before_remove`, which runs outside a worker run. |
 
 `ITERVOX_BIN`, `ITERVOX_DAEMON_URL` and `ITERVOX_API_TOKEN` are also passed through when the daemon has them set. `before_run` is intentionally per-attempt, not per-turn, so setup hooks do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.

@@ -481,6 +481,9 @@ type ProfileEntry struct {
 	AllowedActions []string
 	// CreateIssueState is the target tracker state/column for the create_issue action.
 	CreateIssueState string
+	// AutoReview, when false, is written as auto_review: false. Nil or true
+	// omits the field (default true).
+	AutoReview *bool
 }
 
 type AutomationTriggerEntry = automationdef.Trigger
@@ -575,6 +578,9 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				}
 				if entry.CreateIssueState != "" {
 					replacement = append(replacement, lvl3+"create_issue_state: "+strconv.Quote(entry.CreateIssueState))
+				}
+				if entry.AutoReview != nil && !*entry.AutoReview {
+					replacement = append(replacement, lvl3+"auto_review: false")
 				}
 				if entry.Prompt != "" {
 					replacement = append(replacement, lvl3+"prompt: "+strconv.Quote(entry.Prompt))

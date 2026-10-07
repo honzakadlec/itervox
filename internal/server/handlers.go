@@ -1082,6 +1082,7 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 		Enabled          *bool    `json:"enabled"`
 		AllowedActions   []string `json:"allowedActions"`
 		CreateIssueState string   `json:"createIssueState"`
+		AutoReview       *bool    `json:"autoReview"`
 		OriginalName     string   `json:"originalName"`
 	}
 	if err := decodeJSONBody(w, r, &body); err != nil || body.Command == "" {
@@ -1106,6 +1107,7 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 		Enabled:          body.Enabled == nil || *body.Enabled,
 		AllowedActions:   config.NormalizeAllowedActions(body.AllowedActions),
 		CreateIssueState: strings.TrimSpace(body.CreateIssueState),
+		AutoReview:       body.AutoReview,
 	}
 	if body.Soul != nil {
 		def.Soul = *body.Soul

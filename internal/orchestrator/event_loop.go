@@ -216,7 +216,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			// profile/backend/command a fresh dispatch would use so the
 			// resumed run does not fall back to bare agent.command and lose
 			// the profile's SOUL/INSTRUCTIONS.
-			entry.ProfileName, _, _, entry.Command, entry.Backend, _ = o.resolveIssueDispatchTarget(state, issue.Identifier)
+			entry.ProfileName, _, _, entry.Command, entry.Backend, _ = o.resolveIssueDispatchTarget(state, issue.Identifier, issue.Labels)
 			state.InputRequiredIssues[issue.Identifier] = entry
 			// Recovery path: no live RunEntry — the previous worker is gone
 			// (daemon restart / state loss). B1 self-reentry guard does not
@@ -340,9 +340,12 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 
 		refreshed, err := o.tracker.FetchIssueStatesByIDs(ctx, []string{issueID})
 		if err != nil {
+			// Nothing was dispatched, so keep the attempt: only worker exits
+			// count against max_retries. Bumping it here let a tracker outage
+			// burn the budget unchecked (one per poll).
 			slog.Warn("retry: tracker fetch failed, rescheduling",
-				"issue_id", issueID, "error", err)
-			state = ScheduleRetry(state, issueID, entry.Attempt+1, entry.Identifier,
+				"issue_id", issueID, "attempt", entry.Attempt, "error", err)
+			state = ScheduleRetry(state, issueID, entry.Attempt, entry.Identifier,
 				"retry poll failed", now, BackoffMs(entry.Attempt+1, o.cfg.Agent.MaxRetryBackoffMs), entry.Automation)
 			continue
 		}
@@ -636,14 +639,6 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			delete(state.PendingInputResumes, identifier)
 			continue
 		}
-		if entry.Kind == "" && entry.Automation == nil &&
-			entry.ProfileName == "" && entry.Command == "" && entry.Backend == "" {
-			// No runner metadata — the entry was rehydrated from a tracker
-			// comment (possibly by an older daemon and then persisted to
-			// input_required.json). Resolve what a fresh dispatch would use
-			// so the resume keeps the default/per-issue profile.
-			entry.ProfileName, _, _, entry.Command, entry.Backend, _ = o.resolveIssueDispatchTarget(state, identifier)
-		}
 		if _, running := state.Running[entry.IssueID]; running {
 			continue
 		}
@@ -684,6 +679,14 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			slog.Info("orchestrator: dropping pending input resume for non-active issue",
 				"identifier", identifier, "state", detailed.State)
 			continue
+		}
+		if entry.Kind == "" && entry.Automation == nil &&
+			entry.ProfileName == "" && entry.Command == "" && entry.Backend == "" {
+			// No runner metadata — the entry was rehydrated from a tracker
+			// comment (possibly by an older daemon and then persisted to
+			// input_required.json). Resolve what a fresh dispatch would use
+			// so the resume keeps the default/per-issue/label profile.
+			entry.ProfileName, _, _, entry.Command, entry.Backend, _ = o.resolveIssueDispatchTarget(state, identifier, detailed.Labels)
 		}
 
 		resumeIssue := *detailed
@@ -764,7 +767,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 
 	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, state)
 
-	profileName, profilePtr, agentCommand, runnerCommand, backend, issueBackend := o.resolveIssueDispatchTarget(state, issue.Identifier)
+	profileName, profilePtr, agentCommand, runnerCommand, backend, issueBackend := o.resolveIssueDispatchTarget(state, issue.Identifier, issue.Labels)
 	if profilePtr != nil {
 		slog.Info("orchestrator: using profile",
 			"identifier", issue.Identifier, "profile", profileName, "command", agentCommand, "backend", backend)
@@ -829,13 +832,13 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 // of input-required issues, so a recovered resume runs under the same profile
 // a fresh dispatch would. The same logic powers reviewer dispatch — see
 // resolveBackendForIssue.
-func (o *Orchestrator) resolveIssueDispatchTarget(state State, identifier string) (profileName string, profilePtr *config.AgentProfile, agentCommand, runnerCommand, backend, issueBackend string) {
+func (o *Orchestrator) resolveIssueDispatchTarget(state State, identifier string, labels []string) (profileName string, profilePtr *config.AgentProfile, agentCommand, runnerCommand, backend, issueBackend string) {
 	o.cfgMu.RLock()
 	defaultCommand := o.cfg.Agent.Command
 	defaultBackend := o.cfg.Agent.Backend
 	o.cfgMu.RUnlock()
 
-	profileName = o.issueProfileForDispatch(state, identifier)
+	profileName = o.issueProfileForDispatch(state, identifier, labels)
 	if profileName != "" {
 		o.cfgMu.RLock()
 		profile, ok := o.cfg.Agent.Profiles[profileName]
@@ -861,13 +864,21 @@ func (o *Orchestrator) resolveIssueDispatchTarget(state State, identifier string
 	return profileName, profilePtr, agentCommand, runnerCommand, backend, issueBackend
 }
 
-func (o *Orchestrator) issueProfileForDispatch(state State, identifier string) string {
+// issueProfileForDispatch resolves the issue's profile. Precedence: operator /
+// reviewer override, then auto-switched or persisted per-issue profile, then a
+// profile::<name> tracker label, then agent.default_profile.
+func (o *Orchestrator) issueProfileForDispatch(state State, identifier string, labels []string) string {
 	profileName := state.IssueProfiles[identifier]
 	o.issueProfilesMu.RLock()
 	if override, ok := o.issueProfiles[identifier]; ok {
 		profileName = override
 	}
 	o.issueProfilesMu.RUnlock()
+	if profileName == "" && len(labels) > 0 {
+		o.cfgMu.RLock()
+		profileName = profileFromLabels(identifier, labels, o.cfg.Agent.Profiles)
+		o.cfgMu.RUnlock()
+	}
 	if profileName == "" {
 		// DefaultProfile is read-only after startup — no lock required.
 		profileName = o.cfg.Agent.DefaultProfile
@@ -1446,6 +1457,17 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			autoClear := o.cfg.Workspace.AutoClearWorkspace
 			reviewerProfile := o.cfg.Agent.ReviewerProfile
 			autoReview := o.cfg.Agent.AutoReview
+			runProfile := ""
+			if liveEntry != nil {
+				runProfile = liveEntry.ProfileName
+			} else if ev.RunEntry != nil {
+				runProfile = ev.RunEntry.ProfileName
+			}
+			// A profile can opt out (auto_review: false), e.g. a tester whose
+			// runs produce no code for the reviewer to look at.
+			if p, ok := o.cfg.Agent.Profiles[runProfile]; ok && !config.ProfileAutoReview(p) {
+				autoReview = false
+			}
 			o.cfgMu.RUnlock()
 			reviewerWillRun := autoReview && reviewerProfile != "" && runEligibleForAutoReview(liveEntry)
 			if autoClear && !reviewerWillRun {
@@ -1618,7 +1640,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 							outputTokens = liveEntry.OutputTokens
 						}
 						if failedProfile == "" {
-							failedProfile = o.issueProfileForDispatch(state, issue.Identifier)
+							failedProfile = o.issueProfileForDispatch(state, issue.Identifier, issue.Labels)
 						}
 						rateLimitedQueued = o.dispatchMatchingRateLimitedAutomations(
 							ctx, &state, issue, now,

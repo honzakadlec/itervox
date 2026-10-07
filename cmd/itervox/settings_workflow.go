@@ -30,6 +30,7 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			Enabled:          enabledField,
 			AllowedActions:   config.NormalizeAllowedActions(profile.AllowedActions),
 			CreateIssueState: strings.TrimSpace(profile.CreateIssueState),
+			AutoReview:       profile.AutoReview,
 		}
 	}
 	return out

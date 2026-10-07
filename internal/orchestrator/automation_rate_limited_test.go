@@ -309,12 +309,12 @@ func TestIssueProfileForDispatch_UsesPersistedAutoSwitchState(t *testing.T) {
 		issueBackends: map[string]string{},
 	}
 
-	assert.Equal(t, "codex-coder", o.issueProfileForDispatch(state, "ENG-1"))
+	assert.Equal(t, "codex-coder", o.issueProfileForDispatch(state, "ENG-1", nil))
 	assert.Equal(t, "codex", o.issueBackendForDispatch(state, "ENG-1"))
 
 	o.issueProfiles["ENG-1"] = "operator-pinned"
 	o.issueBackends["ENG-1"] = "claude"
-	assert.Equal(t, "operator-pinned", o.issueProfileForDispatch(state, "ENG-1"),
+	assert.Equal(t, "operator-pinned", o.issueProfileForDispatch(state, "ENG-1", nil),
 		"operator overrides must take precedence over persisted auto-switch state")
 	assert.Equal(t, "claude", o.issueBackendForDispatch(state, "ENG-1"))
 }

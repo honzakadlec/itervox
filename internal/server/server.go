@@ -913,6 +913,9 @@ type ProfileDef struct {
 	Enabled          bool     `json:"enabled"`
 	AllowedActions   []string `json:"allowedActions,omitempty"`
 	CreateIssueState string   `json:"createIssueState,omitempty"`
+	// AutoReview mirrors agent.profiles.<name>.auto_review. On upsert, nil
+	// keeps the profile's current value.
+	AutoReview *bool `json:"autoReview,omitempty"`
 }
 
 type AutomationTriggerDef = automationdef.Trigger

@@ -140,6 +140,8 @@ export const ProfileDefSchema = z.object({
   enabled: z.boolean().optional(),
   allowedActions: z.array(AllowedAgentActionSchema).optional(),
   createIssueState: z.string().optional(),
+  // agent.profiles.<name>.auto_review; omitted on upsert keeps the server value.
+  autoReview: z.boolean().optional(),
 });
 
 export const ModelOptionSchema = z.object({
