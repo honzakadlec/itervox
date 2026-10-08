@@ -495,7 +495,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// multi-profile setups always tell the agent who its peers are.
 		if profileName != "" {
 			if profile, ok := profilesSnap[profileName]; ok {
-				for _, block := range renderProfilePromptBlocks(profile, issue, attemptPtr, runVars) {
+				// Same bindings as the WORKFLOW.md body (workspace.* + run.*), so
+				// SOUL.md / INSTRUCTIONS.md can reference workspace.base_branch.
+				for _, block := range renderProfilePromptBlocks(profile, issue, attemptPtr, promptBindings) {
 					if block != "" {
 						renderedPrompt += "\n\n" + block
 					}
