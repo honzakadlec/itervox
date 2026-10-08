@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -112,7 +113,8 @@ func TestCodexRunnerFreshTurn(t *testing.T) {
 		nil, "hello", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "tid-1", result.SessionID)
 	assert.Equal(t, "done", result.LastText)
@@ -131,7 +133,7 @@ func TestCodexRunnerResumeTurn(t *testing.T) {
 	dir := t.TempDir()
 	fakeExe := filepath.Join(dir, "codex")
 	argFile := filepath.Join(dir, "args.txt")
-	script := fmt.Sprintf("#!/bin/sh\necho \"$@\" > %s\nprintf '%%s' %s\n", shellLiteral(argFile), shellLiteral(fakeOutput))
+	script := fmt.Sprintf("#!/bin/sh\necho \"$@\" > %[1]s\ncat >> %[1]s\nprintf '%%s' %[2]s\n", shellLiteral(argFile), shellLiteral(fakeOutput))
 	require.NoError(t, os.WriteFile(fakeExe, []byte(script), 0o755))
 
 	runner := agent.NewCodexRunner()
@@ -141,7 +143,8 @@ func TestCodexRunnerResumeTurn(t *testing.T) {
 		&sessionID, "continue", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "resumed", result.LastText)
 	assert.Equal(t, 20, result.InputTokens)
@@ -152,7 +155,8 @@ func TestCodexRunnerResumeTurn(t *testing.T) {
 	assert.Contains(t, string(argsData), "-C")
 	assert.Contains(t, string(argsData), "resume")
 	assert.Contains(t, string(argsData), "tid-1")
-	assert.Contains(t, string(argsData), "continue")
+	// CORE-156: the prompt argument is "-" and the prompt arrives on stdin.
+	assert.True(t, strings.HasSuffix(string(argsData), " tid-1 -\ncontinue"), "got %q", argsData)
 }
 
 func TestMultiRunnerDispatchesToCodex(t *testing.T) {
@@ -175,7 +179,8 @@ func TestMultiRunnerDispatchesToCodex(t *testing.T) {
 		nil, "hi", dir, fakeCodex, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "mtr-1", result.SessionID)
 	assert.Equal(t, "codex here", result.LastText)
@@ -202,7 +207,8 @@ func TestCodexRunnerLogsSubagentEvents(t *testing.T) {
 		nil, "hi", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Contains(t, strings.Join(log.info, "\n"), "codex: subagent")
 }
@@ -229,7 +235,8 @@ func TestMultiRunnerDispatchesToHintedBackend(t *testing.T) {
 		nil, "hi", dir, command, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "hint-1", result.SessionID)
 
@@ -321,7 +328,8 @@ func TestMultiRunnerStripsBackendHintFromPrompt(t *testing.T) {
 		nil, "@@itervox-backend=codex actual prompt text", dir, fakeCodex, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "strip-1", result.SessionID)
 
@@ -338,7 +346,8 @@ func TestCodexRunnerStartupFailure(t *testing.T) {
 		nil, "test", t.TempDir(), "/nonexistent/path/to/codex", "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.Error(t, err)
 	assert.True(t, result.Failed)
 	assert.Contains(t, err.Error(), "codex:")
@@ -361,7 +370,8 @@ func TestCodexRunnerWithNonExeCommand(t *testing.T) {
 		nil, "test", dir, fakeWrapper, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "shell-1", result.SessionID)
 }
@@ -389,13 +399,19 @@ func TestParseCodexLine_TurnFailedWithApprovalRequired(t *testing.T) {
 		msg     string
 		wantReq bool
 	}{
-		{"approval required", "Approval required for this action", true},
-		{"waiting for input", "Waiting for input from user", true},
-		{"pending approval", "Pending approval from user", true},
-		{"requires approval", "This action requires approval", true},
-		{"interactive mode", "Interactive mode needed", true},
+		// CORE-166: only a pending human answer flags. Approval, interactive
+		// and confirmation wording is how the CLIs report policy and
+		// non-interactive configuration errors, which stay Failed (retried).
+		// See input_required_msg_test.go for the real-string corpus.
+		{"approval required", "Approval required for this action", false},
+		{"waiting for input", "Waiting for input from user", false},
+		{"pending approval", "Pending approval from user", false},
+		{"requires approval", "This action requires approval", false},
+		{"interactive mode", "Interactive mode needed", false},
 		{"user input", "Waiting for user input", true},
-		{"confirmation required", "Confirmation required to proceed", true},
+		{"confirmation required", "Confirmation required to proceed", false},
+		{"human turn", "Human turn required", true},
+		{"needs your input", "Codex needs your input", true},
 		{"regular error", "API rate limit exceeded", false},
 		{"context exceeded", "Context length exceeded", false},
 	} {
@@ -510,7 +526,8 @@ func TestCodexRunnerLogsActionStarted(t *testing.T) {
 		nil, "build it", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
 	assert.Contains(t, allInfo, "codex: action_started", "in-progress action_started must be logged")
@@ -542,7 +559,8 @@ func TestCodexShellNonZeroExitInDescription(t *testing.T) {
 		nil, "run bad cmd", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
 	assert.Contains(t, allInfo, "exit:127", "non-zero exit code should appear in action log description")
@@ -561,16 +579,24 @@ func TestCodexShellZeroExitNoExitSuffix(t *testing.T) {
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' %s\n", shellLiteral(fakeOutput))
 	require.NoError(t, os.WriteFile(fakeExe, []byte(script), 0o755))
 
-	log := &captureLogger{}
+	// CORE-143: the description (which carries "(exit:N)") is logged as a
+	// kwarg on the "action" line, not as part of the log message itself —
+	// captureLogger only records msg, so allInfo built from it can
+	// structurally never contain "exit:0" regardless of production
+	// behavior. Use captureLoggerFull, which formats kwargs into the
+	// recorded line, so this test actually observes the real output path.
+	log := &captureLoggerFull{}
 	runner := agent.NewCodexRunner()
 	_, err := runner.RunTurn(
 		context.Background(), log, nil,
 		nil, "echo ok", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
+	assert.Contains(t, allInfo, "echo ok", "the zero-exit command description must still be logged")
 	assert.NotContains(t, allInfo, "exit:0", "zero exit should not appear in action log")
 }
 
@@ -594,7 +620,8 @@ func TestCodexShellDetailLoggedAtInfoLevel(t *testing.T) {
 		nil, "build", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
 	assert.Contains(t, allInfo, "codex: action_detail", "action_detail must be logged at INFO level")
@@ -615,6 +642,15 @@ func TestMultiRunnerWarnsOnUnsupportedBackend(t *testing.T) {
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' %s\n", shellLiteral(fakeOutput))
 	require.NoError(t, os.WriteFile(fakeClaude, []byte(script), 0o755))
 
+	// CORE-131: the multi-runner warns via the package-level slog.Warn (not
+	// the injected Logger), so capture it by swapping slog's default handler
+	// and restoring it afterward — the previous version of this test passed
+	// slog.Default() straight through and never inspected any output.
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
 	multi := agent.NewMultiRunner(agent.NewClaudeRunner(), map[string]agent.Runner{
 		"codex": agent.NewCodexRunner(),
 	})
@@ -623,9 +659,14 @@ func TestMultiRunnerWarnsOnUnsupportedBackend(t *testing.T) {
 		nil, "hi", dir, "@@itervox-backend=unsupported "+fakeClaude, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "warn-1", result.SessionID)
+
+	logged := logBuf.String()
+	assert.Contains(t, logged, "unsupported backend", "must warn that the backend is unsupported")
+	assert.Contains(t, logged, "backend=unsupported", "warning must carry the offending backend as an attribute")
 }
 
 // ---------------------------------------------------------------------------
@@ -656,6 +697,7 @@ func TestCodexRunnerInFlightCommandSuspendsReadTimeout(t *testing.T) {
 		nil, "run tests", dir, fakeExe, "",
 		"",
 		300, 20000,
+		agent.PermissionBypass,
 	)
 	require.NoError(t, err)
 	assert.False(t, result.Failed)
@@ -679,6 +721,7 @@ func TestCodexRunnerReadTimeoutKillsAgent(t *testing.T) {
 		nil, "hello", dir, fakeExe, "",
 		"",
 		200, 20000,
+		agent.PermissionBypass,
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read timeout")

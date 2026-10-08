@@ -38,7 +38,19 @@ const (
 	AutomationQueueReasonInputRequired      AutomationQueueReason = "input_required"
 	AutomationQueueReasonPendingInputResume AutomationQueueReason = "pending_input_resume"
 	AutomationQueueReasonBlockedBy          AutomationQueueReason = "blocked_by"
-	AutomationQueueReasonPausedByState      AutomationQueueReason = "paused_by_state"
+	// AutomationQueueReasonInferredBlockedBy mirrors AutomationQueueReasonBlockedBy
+	// for the soft (LLM-inferred) dependency gate added by the
+	// unified-dependency-graph work (dispatch.go's "inferred_blocked_by:<source>"
+	// guard). The soft gate must never be harsher than the hard tracker-blocker
+	// gate, so it gets the same queueable/Blocked-status treatment — only the
+	// reason tag differs, so the dashboard and logs can still tell inferred
+	// blockers apart from tracker blockers.
+	AutomationQueueReasonInferredBlockedBy AutomationQueueReason = "inferred_blocked_by"
+	AutomationQueueReasonPausedByState     AutomationQueueReason = "paused_by_state"
+	// AutomationQueueReasonBackendLimited holds an automation whose target
+	// backend is limited by the backend circuit breaker (CORE-053) instead
+	// of dropping it.
+	AutomationQueueReasonBackendLimited AutomationQueueReason = IneligibleBackendLimited
 )
 
 // AutomationQueueEntry preserves one automation trigger attempt until it can dispatch.
@@ -98,6 +110,12 @@ const (
 	DependencySourceTrackerRelation DependencyAuditSource = "tracker_relation"
 	DependencySourceIssueText       DependencyAuditSource = "issue_text"
 	DependencySourceIssueComment    DependencyAuditSource = "issue_comment"
+	// DependencySourceSubIssue marks a blocker derived from a Linear parent's
+	// child (sub-)issue, as opposed to an explicit "blocks" tracker relation.
+	// Distinguished at internal/tracker/linear/normalize.go child-append time
+	// via domain.BlockerRef.Origin == "sub_issue"; dependencySourceForBlocker
+	// in dependency_audit.go maps that marker to this source.
+	DependencySourceSubIssue DependencyAuditSource = DependencyAuditSource(domain.BlockerOriginSubIssue)
 )
 
 // DependencyAuditEntry is the event-loop-owned dependency state for one issue.
@@ -116,6 +134,19 @@ type DependencyAuditEntry struct {
 	LastAuditedAt         time.Time
 	LastTransitionVersion int64
 	LastTransitionReason  string
+	// InFlight is true while an off-loop refresh batch holds this row. It
+	// excludes the row from re-selection until the result lands or the
+	// watchdog fires. NOT durable — cleared unconditionally on envelope
+	// restore, since a crash mid-refresh would otherwise wedge the row.
+	InFlight bool
+	// ConsecutiveFailures counts back-to-back transient refresh failures.
+	// Reset to 0 on any successful refresh. Drives the degraded marker.
+	ConsecutiveFailures int
+	// LastRefreshAttemptAt is when a refresh was last *attempted* for this
+	// row. Distinct from LastAuditedAt, which means "recomputed" and ticks
+	// for every candidate issue every tick regardless of whether a fetch
+	// occurred — making it the wrong signal for a refresh interval.
+	LastRefreshAttemptAt time.Time
 }
 
 func automationQueueKey(issue domain.Issue, dispatch AutomationDispatch) string {
@@ -348,10 +379,16 @@ func automationQueueLowWater(maxLength int) int {
 }
 
 func automationQueueReasonFromString(reason string) (AutomationQueueReason, string) {
-	if before, after, ok := strings.Cut(reason, ":"); ok && before == string(AutomationQueueReasonBlockedBy) {
-		return AutomationQueueReasonBlockedBy, after
+	before, after, ok := strings.Cut(reason, ":")
+	if !ok {
+		return AutomationQueueReason(reason), ""
 	}
-	return AutomationQueueReason(reason), ""
+	switch AutomationQueueReason(before) {
+	case AutomationQueueReasonBlockedBy, AutomationQueueReasonInferredBlockedBy:
+		return AutomationQueueReason(before), after
+	default:
+		return AutomationQueueReason(reason), ""
+	}
 }
 
 func automationQueueableReason(reason string) (bool, AutomationQueueReason, string) {
@@ -366,7 +403,9 @@ func automationQueueableReason(reason string) (bool, AutomationQueueReason, stri
 		AutomationQueueReasonClaimed,
 		AutomationQueueReasonInputRequired,
 		AutomationQueueReasonPendingInputResume,
-		AutomationQueueReasonBlockedBy:
+		AutomationQueueReasonBlockedBy,
+		AutomationQueueReasonInferredBlockedBy,
+		AutomationQueueReasonBackendLimited: // CORE-053: held, never dropped
 		return true, queueReason, detail
 	default:
 		return false, "", ""
@@ -382,7 +421,7 @@ func IsQueueableAutomationReason(reason string) bool {
 }
 
 func automationQueueStatusForReason(reason AutomationQueueReason) AutomationQueueStatus {
-	if reason == AutomationQueueReasonBlockedBy {
+	if reason == AutomationQueueReasonBlockedBy || reason == AutomationQueueReasonInferredBlockedBy {
 		return AutomationQueueBlocked
 	}
 	return AutomationQueueQueued
@@ -481,6 +520,7 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 	if dispatch.Trigger.Type == config.AutomationTriggerRateLimited && dispatch.AutoResume {
 		if _, autoSwitched := state.AutoSwitchedIdentifiers[issue.Identifier]; autoSwitched {
 			delete(state.PausedIdentifiers, issue.Identifier)
+			clearPauseReason(state, issue.Identifier)
 			delete(state.PausedSessions, issue.Identifier)
 			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 		}
@@ -500,7 +540,12 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 			"reason", reason)
 		return false
 	}
-	return o.startAutomationRun(ctx, state, issue, now, dispatch)
+	started, held := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
+	if held {
+		// CORE-053: the target backend is limited — hold, never drop.
+		return enqueueAutomation(state, issue, dispatch, string(AutomationQueueReasonBackendLimited), now)
+	}
+	return started
 }
 
 // drainAutomationQueueFetchBudget caps per-drain tracker fetches as a
@@ -574,8 +619,14 @@ func (o *Orchestrator) drainAutomationQueueWithCandidates(
 		entry.Status = AutomationQueueDispatching
 		entry.LastAttemptAt = now
 		entry.AttemptCount++
-		if o.startAutomationRun(ctx, state, issue, now, dispatch) {
+		started, held := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
+		if started {
 			removeAutomationQueueEntry(state, entry.ID)
+			continue
+		}
+		if held {
+			// CORE-053: still backend_limited — keep it queued.
+			_ = updateAutomationQueueEntryReason(entry, string(AutomationQueueReasonBackendLimited), now)
 			continue
 		}
 		if AvailableSlots(*state) <= 0 {

@@ -2,10 +2,14 @@ import PageMeta from '../../components/common/PageMeta';
 import { GeneralCard } from './GeneralCard';
 import { TrackerStatesCard } from './TrackerStatesCard';
 import { WorkspaceCard } from './WorkspaceCard';
+import { DependenciesCard } from './DependenciesCard';
 import { ProjectFilterCard } from './ProjectFilterCard';
 import { SSHHostsCard } from './SSHHostsCard';
 import { SkillsCard } from './SkillsCard';
 import { RetriesCard } from './RetriesCard';
+import { CapacityCard } from './CapacityCard';
+import { RateLimitsFailoverCard } from './RateLimitsFailoverCard';
+import { BrowserNotificationsCard } from './BrowserNotificationsCard';
 import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
 import { useClearAllLogs, useClearAllWorkspaces } from '../../queries/issues';
 import { useSettingsPageData } from './useSettingsPageData';
@@ -16,6 +20,7 @@ export default function Settings() {
     terminalStates,
     completionState,
     autoClearWorkspace,
+    depsAnalysisMode,
     autoReview,
     inlineInput,
     trackerKind,
@@ -27,6 +32,7 @@ export default function Settings() {
     trackerStateOptions,
     updateTrackerStates,
     setAutoClearWorkspace,
+    setDepsAnalysisMode,
     setProjectFilter,
     setInlineInput,
     setMaxRetries,
@@ -41,7 +47,7 @@ export default function Settings() {
     <>
       <PageMeta
         title="Itervox | Settings"
-        description="Itervox settings — profiles, tracker states, and workspace"
+        description="Itervox settings — tracker states, workspace, retries, capacity, rate limits and failover, SSH hosts"
       />
       <div className="w-full max-w-5xl space-y-8">
         <div>
@@ -50,7 +56,7 @@ export default function Settings() {
             Configure tracker, workspace, connectivity, and maintenance behaviour. Agent profiles
             and automations now live on their own dedicated pages. All settings are also
             hot-reloaded from{' '}
-            <code className="bg-theme-bg-soft text-theme-accent rounded px-1.5 py-0.5 font-mono text-xs">
+            <code className="bg-theme-bg-soft text-theme-accent-text rounded px-1.5 py-0.5 font-mono text-xs">
               WORKFLOW.md
             </code>
             .
@@ -62,6 +68,16 @@ export default function Settings() {
             General
           </h2>
           <GeneralCard inlineInput={inlineInput} onSetInlineInput={setInlineInput} />
+        </section>
+
+        <section aria-labelledby="section-notifications">
+          <h2
+            id="section-notifications"
+            className="mb-3 text-xs font-semibold tracking-widest uppercase"
+          >
+            Browser notifications
+          </h2>
+          <BrowserNotificationsCard />
         </section>
 
         <section aria-labelledby="section-tracker">
@@ -98,6 +114,16 @@ export default function Settings() {
           />
         </section>
 
+        <section aria-labelledby="section-dependencies">
+          <h2
+            id="section-dependencies"
+            className="mb-3 text-xs font-semibold tracking-widest uppercase"
+          >
+            Dependencies
+          </h2>
+          <DependenciesCard mode={depsAnalysisMode} onSetMode={setDepsAnalysisMode} />
+        </section>
+
         <section aria-labelledby="section-retries">
           <h2 id="section-retries" className="mb-3 text-xs font-semibold tracking-widest uppercase">
             Retries
@@ -107,10 +133,34 @@ export default function Settings() {
             failedState={failedState}
             trackerStateOptions={trackerStateOptions}
             completionState={completionState}
-            maxSwitchesPerIssuePerWindow={maxSwitchesPerIssuePerWindow}
-            switchWindowHours={switchWindowHours}
             onSetMaxRetries={setMaxRetries}
             onSetFailedState={setFailedState}
+          />
+        </section>
+
+        {/* CORE-093 — Capacity (max concurrent agents) sits next to Retries:
+            both decide how much work runs at once and how failures are
+            handled. It moved here from the Agents page. */}
+        <section aria-labelledby="section-capacity">
+          <h2
+            id="section-capacity"
+            className="mb-3 text-xs font-semibold tracking-widest uppercase"
+          >
+            Capacity
+          </h2>
+          <CapacityCard />
+        </section>
+
+        <section aria-labelledby="section-rate-limits">
+          <h2
+            id="section-rate-limits"
+            className="mb-3 text-xs font-semibold tracking-widest uppercase"
+          >
+            Rate limits &amp; failover
+          </h2>
+          <RateLimitsFailoverCard
+            maxSwitchesPerIssuePerWindow={maxSwitchesPerIssuePerWindow}
+            switchWindowHours={switchWindowHours}
             onSetMaxSwitchesPerIssuePerWindow={setMaxSwitchesPerIssuePerWindow}
             onSetSwitchWindowHours={setSwitchWindowHours}
           />

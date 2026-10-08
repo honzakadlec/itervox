@@ -1,20 +1,49 @@
-import type { BlockerDetail, TrackerIssue } from '../../types/schemas';
+import { ineligibleReasonLabel } from '../../lib/ineligibleReasonLabel';
+import type { BlockerDetail, DependencyAttentionRow, TrackerIssue } from '../../types/schemas';
 
 interface IssueBlockerDetailsProps {
   issue: Pick<TrackerIssue, 'blockedBy' | 'blockedByDetails' | 'ineligibleReason'>;
+  // critical-path-ordering Task 5/6 — this issue's dependencyAttention entry
+  // (if any), sourced from the snapshot store by the caller. Absent means
+  // the issue is not a cycle member and is not blocked past
+  // dependencies.escalate_blocked_after_hours.
+  attention?: DependencyAttentionRow;
 }
 
-export function IssueBlockerDetails({ issue }: IssueBlockerDetailsProps) {
+export function IssueBlockerDetails({ issue, attention }: IssueBlockerDetailsProps) {
   const blockers = blockersForIssue(issue);
-  if (!issue.ineligibleReason && blockers.length === 0) return null;
+  if (!issue.ineligibleReason && blockers.length === 0 && !attention) return null;
 
   return (
     <>
+      {attention && (
+        <div>
+          <span
+            data-testid="issue-attention-badge"
+            className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${
+              attention.kind === 'cycle'
+                ? 'bg-theme-danger-soft text-theme-danger-text'
+                : 'bg-theme-warning-soft text-theme-warning-text'
+            }`}
+          >
+            Needs attention — {attention.kind === 'cycle' ? 'dependency cycle' : 'stale blocker'}
+          </span>
+        </div>
+      )}
+
       {issue.ineligibleReason && (
         <div>
           <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Not dispatchable</h4>
-          <p className="bg-theme-warning-soft text-theme-warning inline-flex rounded px-2 py-1 font-mono text-xs">
-            {issue.ineligibleReason}
+          {/* CORE-080 — same label table as the card/row chip; the raw
+              machine reason stays visible here for debugging. */}
+          <p
+            title={issue.ineligibleReason}
+            className="bg-theme-warning-soft text-theme-warning-text inline-flex rounded px-2 py-1 text-xs"
+          >
+            {ineligibleReasonLabel(issue.ineligibleReason).label}
+            {ineligibleReasonLabel(issue.ineligibleReason).label !== issue.ineligibleReason && (
+              <span className="ml-1.5 font-mono opacity-70">({issue.ineligibleReason})</span>
+            )}
           </p>
         </div>
       )}
@@ -26,7 +55,7 @@ export function IssueBlockerDetails({ issue }: IssueBlockerDetailsProps) {
             {blockers.map((blocker) => (
               <span
                 key={blocker.identifier}
-                className="bg-theme-danger-soft text-theme-danger inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs"
+                className="bg-theme-danger-soft text-theme-danger-text inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs"
               >
                 {blocker.url ? (
                   <a

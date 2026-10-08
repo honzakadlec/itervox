@@ -7,8 +7,10 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/vnovick/itervox/internal/gitexec"
+	"github.com/vnovick/itervox/internal/procgroup"
 )
 
 const defaultHookTimeoutMs = 60000
@@ -62,10 +64,19 @@ func RunHookWithEnv(ctx context.Context, script, workspacePath string, timeoutMs
 	cmd.Dir = workspacePath
 	cmd.Stdout = out
 	cmd.Stderr = out
-	cmd.Env = withExtraEnv(hookEnv(os.Environ()), extraEnv)
+	// Scrubbed: a hook script that runs git must act on this workspace,
+	// not on a repository named by an inherited GIT_DIR.
+	cmd.Env = withExtraEnv(hookEnv(gitexec.Environ()), extraEnv)
 	setHookProcessGroup(cmd)
 
-	runErr := cmd.Run()
+	// Start + Track + Wait rather than Run so the hook's group is in the
+	// CORE-042 orphan ledger while it runs.
+	runErr := cmd.Start()
+	if runErr == nil {
+		untrack := procgroup.Track(ctx, cmd)
+		runErr = cmd.Wait()
+		untrack()
+	}
 
 	// Forward hook output to caller's log function, if provided.
 	if len(logFn) > 0 && logFn[0] != nil {
@@ -176,13 +187,11 @@ func isItervoxAllowlistKey(kv string) bool {
 	return false
 }
 
+// setHookProcessGroup runs the hook in its own process group and kills the
+// whole group on cancellation. procgroup.Configure (CORE-150) re-sends
+// SIGKILL until the group is empty, so a child the hook's shell was forking
+// at the instant of the first kill cannot escape it — the same fix the
+// agent runners use, from the same shared helper.
 func setHookProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	cmd.WaitDelay = 5 * time.Second
+	procgroup.Configure(cmd, 5*time.Second)
 }

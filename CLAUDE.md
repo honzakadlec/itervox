@@ -2,7 +2,7 @@
 
 ## What this project is
 
-**Itervox** is a long-running daemon (Go 1.25.11) that implements the
+**Itervox** is a long-running daemon (Go 1.25.13) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
 It polls Linear, GitHub Issues, or Jira, spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
@@ -81,8 +81,8 @@ No mutex is needed for `State` fields — only the event loop writes them.
 ### Queue, dependency audit, and status ledgers are event-loop state
 
 `AutomationQueue`, `AutomationQueueOrder`, `AutomationQueueBackpressure`,
-`DependencyAudit`, and `IssueStatusHistory` are normal `orchestrator.State`
-fields. They follow the same rule as `Running`, `RetryQueue`, and other state:
+`DependencyAudit`, `DispatchPressure`, and `IssueStatusHistory` are normal
+`orchestrator.State` fields. They follow the same rule as `Running`, `RetryQueue`, and other state:
 only the event loop mutates them.
 
 - Automation producers send `EventDispatchAutomation`; the event loop decides
@@ -93,10 +93,50 @@ only the event loop mutates them.
   `blockers_resolved` automation trigger when blockers transition to terminal,
   but tracker state moves require explicit automation policy plus a profile with
   `move_state`.
-- The dashboard Deps tab is display-only in v0.2.0 and must derive from
-  snapshot dependency graph rows, not a parallel frontend dependency store.
+- Inferred (LLM-detected) edges soft-gate dispatch: a confidence threshold,
+  a staleness window, and a per-issue operator override (`State.DepsOverrides`)
+  all factor into `InferredDepEntry.Gating`; tracker-declared blockers
+  (`DependencyAudit`) stay hard blocks regardless. The dependency graph is
+  derived solely from `orchestrator.State.InferredDeps` (event-loop
+  reconciled) plus `DependencyAudit` — `cmd/itervox` no longer reads the
+  deps-analyzer sidecar for the dashboard graph.
+- The dashboard Deps tab derives from snapshot dependency graph rows, not a
+  parallel frontend dependency store. Its only mutation surface is the
+  per-issue inferred-blockers override, which goes through the documented
+  `POST`/`DELETE /api/v1/issues/{identifier}/deps-override` endpoints →
+  `SetDepsOverride` → `EventSetDepsOverride` in the event loop; the tab never
+  mutates dependency state directly.
 - Issue status history is bounded runtime-session history unless future work
   explicitly adds restart durability.
+- `RecentFailures` (CORE-046) is a bounded (100) event-loop ring. Off-loop
+  producers (ledger writer, outbox flusher, recovered panics, the
+  `/api/v1/client-errors` handler) call `Orchestrator.RecordFailure`, a
+  NON-blocking send of `EventFailureRecorded`; a dropped failure is counted,
+  never re-sent. Messages come from classified errors only (never agent
+  output or prompt text) and are redacted before truncation. Not persisted;
+  `cmd/itervox` carries it across `WORKFLOW.md` reloads via
+  `SeedRecentFailures`.
+- `BackendHealth` (CORE-053) is the per-(backend, worker host) circuit
+  breaker and `BackendLimitedHolds` the issues it refused (`backend_limited`).
+  Both are event-loop state; the gate (`gateDispatch`) runs after the
+  CORE-115 resolver in every admission path (dispatch, fireRetries, reviewer,
+  automation, pending-input resume). Open breakers persist to
+  `backend_health.json` via the ledger writer. `agent.backend_fallback` is
+  load-time config, NOT in the cfgMu allowlist.
+- `PendingReviews` (M4-close BH-M4-2) holds reviewer dispatches refused while
+  draining. It is event-loop state persisted to `pending_reviews.json` (ledger
+  writer) and re-dispatched by `resumePendingReviews` once admission reopens;
+  the marker is cleared when any reviewer for that issue starts.
+- `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
+  (no free slots with eligible work waiting) or *dependency-bound* (free
+  slots that went unused because remaining candidates were blocked). It is
+  observed once per tick after the dispatch loop via `observeDispatchPressure`
+  and is session-scoped — deliberately not persisted, since it describes the
+  running fleet's current configuration. Classification runs against a probe
+  copy of `State` with the slot gate neutralized, because
+  `ineligibleReasonShared` checks `AvailableSlots` *before* the blocker gates
+  and would otherwise mask every dependency reason as `no_slots` on exactly
+  the saturated ticks the metric exists to explain.
 
 ### `cfgMu` guards exactly these fields (and nothing else)
 
@@ -111,6 +151,7 @@ full field path** so the test allowlist (`AllowedMutableCfgFields`) and this doc
 section stay easy to diff.
 
 - `cfg.Agent.AutoReview`
+- `cfg.Agent.AvailableModels`
 - `cfg.Agent.DepsAnalyzerProfile`
 - `cfg.Agent.DispatchStrategy`
 - `cfg.Agent.InlineInput`
@@ -125,6 +166,7 @@ section stay easy to diff.
 - `cfg.Agent.SwitchRevertHours`
 - `cfg.Agent.SwitchWindowHours`
 - `cfg.Automations`
+- `cfg.Dependencies.AnalysisMode`
 - `cfg.Tracker.ActiveStates`
 - `cfg.Tracker.CompletionState`
 - `cfg.Tracker.FailedState`
@@ -197,12 +239,29 @@ domain ─────┬── tracker (interface + adapters: linear, github, j
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)
 
-workflow ──── config ──── workspace
+procgroup (stdlib only — own process group + group SIGKILL re-sent until
+           ESRCH; the one shared kill path for agent runners and hooks)
 
-agent (claude/codex subprocess runners — imports domain, config)
+metrics (stdlib only — process-wide counters + hand-written Prometheus text
+         exposition; a leaf imported by tracker, orchestrator, server,
+         logbuffer and depsanalysis. It imports NO internal package: the
+         View is injected by cmd/itervox from Snapshot(), never cfgMu)
 
-orchestrator (single-goroutine state machine — imports agent, config, domain,
-              logbuffer, prdetector, prompt, tracker, workspace)
+logging (stdlib only — RedactingHandler / RedactString; imported by agent,
+         orchestrator and cmd/itervox)
+
+gitexec (stdlib only — the ONLY way to run `git`: scrubs GIT_DIR/GIT_WORK_TREE
+         & co. and requires a dir; audited by TestNoRawGitExecOutsideGitexec)
+
+workflow ──── config ──── workspace (hooks — also imports procgroup)
+
+agent (claude/codex subprocess runners — imports domain, config, procgroup,
+       logging)
+
+orchestrator (single-goroutine state machine — imports agent, agentactions,
+              atomicfs, config, depsanalysis, domain, logbuffer, logging,
+              metrics, outbox, prdetector, procgroup, prompt, tracker,
+              workspace)
 
 app (EnrichIssue business logic — imports domain, tracker)
 
@@ -223,7 +282,7 @@ cmd/itervox (wires everything)
 - **State**: Zustand (`itervoxStore` for snapshot, `toastStore` for notifications, `uiStore` for view mode/filters, `tokenStore`/`authStore` for auth)
 - **Server state**: TanStack Query (issues, logs — `staleTime: 10_000`)
 - **Real-time**: SSE via `@microsoft/fetch-event-source` (NOT native `EventSource`) — needed so the connection can carry an `Authorization: Bearer` header. Single seam is `web/src/auth/authedEventStream.ts`, consumed by `useItervoxSSE`, `useLogStream`, and the per-issue log-stream in `queries/logs.ts`.
-- **Auth**: bearer-token middleware gated by `ITERVOX_API_TOKEN`. Auto-generated ephemeral token on non-loopback bind unless `server.allow_unauthenticated_lan: true`. All frontend HTTP goes through `authedFetch` in `web/src/auth/authedFetch.ts` — NEVER call `fetch()` or `new EventSource()` directly.
+- **Auth**: bearer-token middleware gated by `ITERVOX_API_TOKEN`. Auto-generated ephemeral token on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). All frontend HTTP goes through `authedFetch` in `web/src/auth/authedFetch.ts` — NEVER call `fetch()` or `new EventSource()` directly.
 - **Routing**: React Router v7 (file-based lazy pages)
 - **DnD**: dnd-kit (`PointerSensor` + `KeyboardSensor` registered on all boards)
 - **Schema validation**: Zod at SSE parse boundary and query results
@@ -269,7 +328,30 @@ useToastStore.getState().addToast({ message: 'x', type: 'error' }); // ❌
 
 ## Known dead code (do not flag as bugs)
 
-*No known dead code at this time.*
+*Nothing is currently gated here.*
+
+**Reviewer fan-out was ungated in #58.** `ReviewerProfileChain` previously
+truncated its result to one entry, which made `AdvanceReviewChain`,
+`ReadReviewVerdict`, `reviewVerdictRelPathFor`, `State.ReviewChainIndex`,
+`State.ReviewOutcomes`, and `agent.review_quorum` statically unreachable. The
+truncation is gone and every one of those now has a live read site, so they must
+NOT be treated as dead code.
+
+The two lifecycle defects that justified the gate are fixed and pinned:
+
+1. **The chain never advanced.** The `TerminalSucceeded` handler identified a
+   reviewer only via `state.Running`, which `ReconcileTrackerStates` deletes
+   first when `tracker.completion_state` moves the issue terminal. It now
+   recovers the reviewer identity from `reviewerInjectedProfiles`, which
+   reconciliation does not touch.
+2. **The workspace was cleared mid-chain.** The auto-clear decision keyed off
+   `runEligibleForAutoReview` ("would a FRESH review start?"), which is false
+   for a reviewer's own exit. It now also consults `reviewChainInFlight`, so the
+   worktree survives until the quorum closes.
+
+Both are covered by `TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping`,
+which runs the exact configuration that reproduced them and asserts one worker
+plus both reviewers (no re-dispatch loop) and exactly one workspace clear.
 
 ---
 

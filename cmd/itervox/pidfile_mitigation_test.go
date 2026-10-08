@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,25 +22,6 @@ func TestListenStrictKernelPickOnPortZero(t *testing.T) {
 	}
 	if actualAddr != ln.Addr().String() {
 		t.Errorf("returned addr %q != listener addr %q", actualAddr, ln.Addr().String())
-	}
-}
-
-// TestFatalStartupErrorIsRecognised — wrapping an error in fatalStartupError
-// is the signal the outer restart loop uses to bail instead of retrying. The
-// helper must detect it both directly and through one Unwrap layer (the
-// loop sees it after fmt.Errorf("...%w...", err) wrapping).
-func TestFatalStartupErrorIsRecognised(t *testing.T) {
-	inner := os.ErrPermission
-	fatal := fatalStartupError{inner: inner}
-	if !isFatalStartupError(fatal) {
-		t.Error("direct fatalStartupError must be recognised")
-	}
-	wrapped := fmt.Errorf("wrapper: %w", fatal)
-	if !isFatalStartupError(wrapped) {
-		t.Error("wrapped fatalStartupError must be recognised")
-	}
-	if isFatalStartupError(inner) {
-		t.Error("plain error must NOT be recognised as fatal")
 	}
 }
 
@@ -68,7 +48,8 @@ func TestRequireNoLiveDaemonAllowsStalePidfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	livePid, _, _, err := requireNoLiveDaemon(wf)
+	t.Cleanup(func() { removePIDFile(wf) }) // release the CORE-039 pid lock
+	livePid, _, _, err := claimPIDFile(wf)
 	if err != nil {
 		t.Errorf("stale pidfile must not block startup; got %v", err)
 	}
@@ -79,26 +60,15 @@ func TestRequireNoLiveDaemonAllowsStalePidfile(t *testing.T) {
 }
 
 // TestRequireNoLiveDaemonRefusesWhenPidAlive — when the previous daemon's PID
-// is still alive (our own PID is the easiest live-PID we can guarantee), the
-// helper must refuse to start.
+// is still alive, the helper must refuse to start. A real foreign process
+// stands in for it: since CORE-039 our own pid in the file is stale by
+// construction (the same-pid container restart), so it cannot be used here.
 func TestRequireNoLiveDaemonRefusesWhenPidAlive(t *testing.T) {
-	tmp := t.TempDir()
-	wf := filepath.Join(tmp, "WORKFLOW.md")
-	if err := os.WriteFile(wf, []byte("---\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	pidDir := filepath.Join(tmp, ".itervox")
-	if err := os.MkdirAll(pidDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	livePID := os.Getpid()
-	contents := []byte(strings.TrimSpace("") +
-		stringFromInt(livePID) + "\t" + wf + "\n")
-	if err := os.WriteFile(filepath.Join(pidDir, "daemon.pid"), contents, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	wf := claimWorkflow(t)
+	livePID := startForeignProcess(t)
+	seedPIDFile(t, wf, stringFromInt(livePID)+"\t"+wf+"\n")
 
-	_, _, _, err := requireNoLiveDaemon(wf)
+	_, _, _, err := claimPIDFile(wf)
 	if err == nil {
 		t.Fatal("expected refusal when previous daemon PID is alive")
 	}

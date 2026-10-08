@@ -119,19 +119,19 @@ func TestRenderIncludesComments(t *testing.T) {
 	assert.Equal(t, "alice: Please fix the crash", out)
 }
 
-func TestRenderWithBindingsExposesExtra(t *testing.T) {
+func TestRenderWithExtraExposesExtra(t *testing.T) {
 	tmpl := "Issue: {{ issue.identifier }} -> {{ workspace.base_branch }}"
 	extra := map[string]any{
 		"workspace": map[string]any{"base_branch": "PBFSHOP-787"},
 	}
-	out, err := prompt.RenderWithBindings(tmpl, baseIssue(), nil, extra)
+	out, err := prompt.RenderWith(tmpl, baseIssue(), nil, extra)
 	require.NoError(t, err)
 	assert.Equal(t, "Issue: ENG-1 -> PBFSHOP-787", out)
 }
 
-func TestRenderWithBindingsNilExtraMatchesRender(t *testing.T) {
+func TestRenderWithExtraNilExtraMatchesRender(t *testing.T) {
 	tmpl := "Issue: {{ issue.identifier }}"
-	out, err := prompt.RenderWithBindings(tmpl, baseIssue(), nil, nil)
+	out, err := prompt.RenderWith(tmpl, baseIssue(), nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Issue: ENG-1", out)
 }

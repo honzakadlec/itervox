@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import MarkdownPanel from './MarkdownPanel';
 import IssueDetailHeader from './IssueDetailHeader';
 import { IssueBlockerDetails } from './IssueBlockerDetails';
 import { IssueReviewThread } from './IssueReviewThread';
 import { IssueStatusChanges } from './IssueStatusChanges';
+import { InputRequiredPanel } from './InputRequiredPanel';
+import { IssueCommentComposer } from './IssueCommentComposer';
+import { IssueBackendControl } from './IssueBackendControl';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
+import { ConfirmButton } from '../ui/button/ConfirmButton';
 import {
   useIssues,
   useIssue,
@@ -21,6 +25,11 @@ import {
   ISSUE_KEY,
 } from '../../queries/issues';
 import { EMPTY_PROFILE_LABEL, EMPTY_PROFILES } from '../../utils/format';
+import { EMPTY_DEPENDENCY_ATTENTION, EMPTY_STATES } from '../../utils/constants';
+
+// CORE-070 — tracker.working_state default (internal/config/config.go), used
+// only when the snapshot does not publish workingState (older daemons).
+export const DEFAULT_WORKING_STATE = 'In Progress';
 
 export default function IssueDetailSlide() {
   const selectedIdentifier = useItervoxStore((s) => s.selectedIdentifier);
@@ -32,7 +41,10 @@ export default function IssueDetailSlide() {
   const { data: freshIssue } = useIssue(selectedIdentifier ?? '');
   const issue = freshIssue ?? issuesList.find((i) => i.identifier === selectedIdentifier) ?? null;
 
+  // CORE-073 — one verb per action, matching the dashboard tables and the TUI
+  // CORE-073 (spec): Discard for /terminate on running and paused issues alike.
   const cancelIssueMutation = useCancelIssue();
+  const cancelRetryMutation = useCancelIssue({ verb: 'Cancel retry' });
   const terminateIssueMutation = useTerminateIssue();
   const resumeIssueMutation = useResumeIssue();
   const setIssueProfileMutation = useSetIssueProfile();
@@ -45,7 +57,16 @@ export default function IssueDetailSlide() {
   const runningRows = useItervoxStore((s) => s.snapshot?.running);
   const historyRows = useItervoxStore((s) => s.snapshot?.history);
   const automations = useItervoxStore((s) => s.snapshot?.automations);
-  const [replyText, setReplyText] = useState('');
+  // critical-path-ordering Task 5/6 — cycle/stale-blocker alerts, derived
+  // event-loop-side and surfaced read-only on the snapshot.
+  const dependencyAttention = useItervoxStore(
+    (s) => s.snapshot?.dependencyAttention ?? EMPTY_DEPENDENCY_ATTENTION,
+  );
+  // outbox #54 fast-follow: same join-by-identifier against
+  // snapshot.outboxSyncing BoardView's DraggableCard has used since Task 4.
+  const outboxSyncing = useItervoxStore((s) => s.snapshot?.outboxSyncing ?? EMPTY_STATES);
+  const inlineInput = useItervoxStore((s) => s.snapshot?.inlineInput ?? false);
+  const workingState = useItervoxStore((s) => s.snapshot?.workingState || DEFAULT_WORKING_STATE);
 
   const close = useCallback(() => {
     setSelectedIdentifier(null);
@@ -61,8 +82,19 @@ export default function IssueDetailSlide() {
 
   if (!selectedIdentifier || !issue) return null;
 
-  const isInReview = issue.state.toLowerCase() === 'in review';
-  const isProfileLocked = issue.state.toLowerCase().includes('progress');
+  const issueAttention = dependencyAttention.find((row) => row.identifier === issue.identifier);
+  // CORE-070 — the lock follows the configured working state (exact,
+  // case-insensitive match), not any state name containing "progress".
+  const isProfileLocked =
+    issue.orchestratorState === 'running' ||
+    issue.state.toLowerCase() === workingState.toLowerCase();
+  // The footer carries run controls only. Review is rendered once, in the
+  // body (reachable for every non-running issue, including idle backlog and
+  // completion-state issues), so the footer no longer keys on a state name.
+  const hasFooterActions =
+    issue.orchestratorState === 'running' ||
+    issue.orchestratorState === 'retrying' ||
+    issue.orchestratorState === 'paused';
 
   return (
     <SlidePanel isOpen direction="right" title={issue.identifier} onClose={close}>
@@ -74,6 +106,7 @@ export default function IssueDetailSlide() {
         profileDefs={profileDefs}
         defaultBackend={defaultBackend}
         automations={automations}
+        syncing={outboxSyncing.includes(issue.identifier)}
       />
 
       {/* Scrollable body */}
@@ -84,7 +117,7 @@ export default function IssueDetailSlide() {
               href={issue.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-theme-accent text-sm hover:underline"
+              className="text-theme-accent-text text-sm hover:underline"
             >
               View in tracker →
             </a>
@@ -114,7 +147,7 @@ export default function IssueDetailSlide() {
         {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (
           <div className="flex flex-wrap items-center gap-2">
             {issue.priority != null && (
-              <span className="bg-theme-warning-soft text-theme-warning inline-flex items-center rounded px-2 py-0.5 text-xs font-medium">
+              <span className="bg-theme-warning-soft text-theme-warning-text inline-flex items-center rounded px-2 py-0.5 text-xs font-medium">
                 P{issue.priority}
               </span>
             )}
@@ -138,12 +171,13 @@ export default function IssueDetailSlide() {
                 <span className="text-theme-text-secondary text-xs">
                   {issue.agentProfile ?? EMPTY_PROFILE_LABEL}
                 </span>
-                <span className="bg-theme-warning-soft text-theme-warning rounded px-1.5 py-0.5 text-[10px]">
-                  locked while In Progress
+                <span className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 text-[10px]">
+                  locked while {issue.orchestratorState === 'running' ? 'running' : issue.state}
                 </span>
               </div>
             ) : (
               <select
+                aria-label="Agent profile"
                 value={issue.agentProfile ?? ''}
                 onChange={(e) => {
                   setIssueProfileMutation.mutate({
@@ -151,7 +185,7 @@ export default function IssueDetailSlide() {
                     profile: e.target.value,
                   });
                 }}
-                className="rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
+                className="focus:border-theme-accent rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
                 style={{
                   borderColor: 'var(--line)',
                   background: 'var(--panel-strong)',
@@ -170,6 +204,13 @@ export default function IssueDetailSlide() {
             )}
           </div>
         )}
+
+        {/* Agent Backend (CORE-056) */}
+        <IssueBackendControl
+          key={issue.identifier} // BH-M3-10: no error/pending state across issues
+          issue={issue}
+          defaultBackend={defaultBackend}
+        />
 
         {/* Branch */}
         {issue.branchName && (
@@ -192,7 +233,7 @@ export default function IssueDetailSlide() {
           </div>
         )}
 
-        <IssueBlockerDetails issue={issue} />
+        <IssueBlockerDetails issue={issue} attention={issueAttention} />
 
         {/* Description */}
         <div>
@@ -285,116 +326,53 @@ export default function IssueDetailSlide() {
             );
           })()}
 
-        {/* Input Required — reply UI */}
-        {issue.orchestratorState === 'input_required' && (
-          <div className="space-y-3 rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
-              <h4 className="text-sm font-semibold text-orange-400">Agent needs your input</h4>
-            </div>
-            {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
-            <textarea
-              value={replyText}
-              onChange={(e) => {
-                setReplyText(e.target.value);
-              }}
-              placeholder="Type your reply… (will be posted as a comment to the tracker)"
-              rows={4}
-              className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
-            />
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  if (!replyText.trim()) return;
-                  provideInputMutation.mutate(
-                    { identifier: issue.identifier, message: replyText.trim() },
-                    {
-                      onSuccess: () => {
-                        setReplyText('');
-                      },
-                    },
-                  );
-                }}
-                disabled={provideInputMutation.isPending || !replyText.trim()}
-                className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-              >
-                {provideInputMutation.isPending ? 'Sending…' : 'Reply & Resume Agent'}
-              </button>
-              <button
-                onClick={() => {
-                  dismissInputMutation.mutate(issue.identifier);
-                }}
-                disabled={dismissInputMutation.isPending}
-                className="text-theme-text-secondary bg-theme-bg-soft rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
-              >
-                {dismissInputMutation.isPending ? 'Dismissing…' : 'Dismiss'}
-              </button>
-            </div>
-          </div>
+        {/* Operator comment composer — always available except while the
+            issue is input_required, where the reply box below is the
+            answer channel for the agent's question instead. */}
+        {issue.orchestratorState !== 'input_required' && (
+          <IssueCommentComposer identifier={issue.identifier} />
         )}
 
-        {issue.orchestratorState === 'pending_input_resume' && (
-          <div className="space-y-3 rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
-              <h4 className="text-sm font-semibold text-orange-400">Reply received</h4>
-            </div>
-            <p className="text-theme-text-secondary text-sm">
-              Itervox has your reply and is waiting to resume the agent.
-            </p>
-            {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
-          </div>
-        )}
+        {/* Input Required — reply UI (extracted, Task 5 size-budget) */}
+        <InputRequiredPanel
+          issue={issue}
+          inlineInput={inlineInput}
+          provideInputMutation={provideInputMutation}
+          dismissInputMutation={dismissInputMutation}
+        />
       </div>
 
-      {/* Sticky action footer */}
-      {(issue.orchestratorState === 'running' ||
-        issue.orchestratorState === 'retrying' ||
-        issue.orchestratorState === 'paused' ||
-        issue.orchestratorState === 'input_required' ||
-        isInReview) && (
-        <div className="border-theme-line flex flex-shrink-0 items-center justify-between gap-3 border-t px-5 py-4">
-          {reviewerProfile && issue.orchestratorState !== 'running' && (
-            <button
-              onClick={() => {
-                triggerAIReviewMutation.mutate(issue.identifier);
-              }}
-              disabled={triggerAIReviewMutation.isPending}
-              className="rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-colors hover:opacity-80"
-              style={{
-                background: 'rgba(168,85,247,0.12)',
-                borderColor: 'rgba(168,85,247,0.2)',
-                color: 'rgb(168,85,247)',
-              }}
-              title={`Dispatch reviewer (${reviewerProfile} profile)`}
-            >
-              {triggerAIReviewMutation.isPending ? 'Reviewing…' : '🔍 Review'}
-            </button>
-          )}
-
-          <div className="ml-auto flex items-center gap-2">
+      {/* Sticky action footer — run controls (CORE-073 verbs) */}
+      {hasFooterActions && (
+        <div
+          data-testid="issue-detail-footer"
+          className="border-theme-line flex flex-shrink-0 items-center justify-end gap-3 border-t px-5 py-4"
+        >
+          <div className="flex items-center gap-2">
             {/* Paused state */}
             {issue.orchestratorState === 'paused' && (
               <>
                 <button
                   onClick={() => {
-                    resumeIssueMutation.mutate(issue.identifier);
-                    close();
+                    // Close only once the daemon accepted the resume; on
+                    // failure the slide stays open with the error toast so
+                    // the operator can retry.
+                    resumeIssueMutation.mutate(issue.identifier, { onSuccess: close });
                   }}
                   disabled={resumeIssueMutation.isPending}
-                  className="bg-theme-success rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+                  className="bg-theme-success-soft text-theme-success-text rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
                 >
-                  {resumeIssueMutation.isPending ? 'Resuming…' : '▶ Resume Agent'}
+                  {resumeIssueMutation.isPending ? 'Resuming…' : '▶ Resume'}
                 </button>
-                <button
-                  onClick={() => {
+                <ConfirmButton
+                  label="✕ Discard"
+                  confirmLabel="Yes, discard"
+                  pendingLabel="Discarding…"
+                  isPending={terminateIssueMutation.isPending}
+                  onConfirm={() => {
                     terminateIssueMutation.mutate(issue.identifier);
                   }}
-                  disabled={terminateIssueMutation.isPending}
-                  className="bg-theme-danger rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-                >
-                  {terminateIssueMutation.isPending ? 'Discarding…' : '✕ Discard'}
-                </button>
+                />
               </>
             )}
 
@@ -406,19 +384,19 @@ export default function IssueDetailSlide() {
                     cancelIssueMutation.mutate(issue.identifier);
                   }}
                   disabled={cancelIssueMutation.isPending || terminateIssueMutation.isPending}
-                  className="bg-theme-warning rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+                  className="bg-theme-warning-soft text-theme-warning-text rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
                 >
-                  {cancelIssueMutation.isPending ? 'Pausing…' : '⏸ Pause Agent'}
+                  {cancelIssueMutation.isPending ? 'Pausing…' : '⏸ Pause'}
                 </button>
-                <button
-                  onClick={() => {
+                <ConfirmButton
+                  label="✕ Discard"
+                  confirmLabel="Yes, discard"
+                  pendingLabel="Discarding…"
+                  isPending={cancelIssueMutation.isPending || terminateIssueMutation.isPending}
+                  onConfirm={() => {
                     terminateIssueMutation.mutate(issue.identifier);
                   }}
-                  disabled={cancelIssueMutation.isPending || terminateIssueMutation.isPending}
-                  className="bg-theme-danger rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-                >
-                  {terminateIssueMutation.isPending ? 'Cancelling…' : '✕ Cancel Agent'}
-                </button>
+                />
               </>
             )}
 
@@ -426,12 +404,12 @@ export default function IssueDetailSlide() {
             {issue.orchestratorState === 'retrying' && (
               <button
                 onClick={() => {
-                  cancelIssueMutation.mutate(issue.identifier);
+                  cancelRetryMutation.mutate(issue.identifier);
                 }}
-                disabled={cancelIssueMutation.isPending}
-                className="bg-theme-warning rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+                disabled={cancelRetryMutation.isPending}
+                className="bg-theme-warning-soft text-theme-warning-text rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
               >
-                {cancelIssueMutation.isPending ? 'Cancelling…' : '✕ Cancel Retry'}
+                {cancelRetryMutation.isPending ? 'Cancelling retry…' : '✕ Cancel retry'}
               </button>
             )}
           </div>

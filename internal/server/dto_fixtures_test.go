@@ -75,6 +75,8 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 
 	at := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+	lastFailedAt := at.Add(10 * time.Second)
+	resetAt := at.Add(10 * time.Minute)
 	tptr := func(t time.Time) *time.Time { return &t }
 
 	fixtures := map[string]any{
@@ -148,6 +150,19 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 			TargetState:      "Todo",
 			Resolved:         false,
 			SourceKnown:      true,
+			Origin:           "tracker",
+			Gating:           true,
+		},
+		"DependencyCycleRow.json": DependencyCycleRow{
+			Members:    []string{"ENG-1", "ENG-2"},
+			Kind:       "tracker",
+			DetectedAt: at,
+		},
+		"DependencyAttentionRow.json": DependencyAttentionRow{
+			Identifier:   "ENG-1",
+			Blockers:     []string{"ENG-2"},
+			BlockedSince: at.Add(-3 * time.Hour),
+			Kind:         "cycle",
 		},
 		"IssueStatusChangeRow.json": IssueStatusChangeRow{
 			FromState:    "Todo",
@@ -159,6 +174,70 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 			Backend:      "claude",
 			WorkerHost:   "local",
 			At:           at,
+		},
+		"OutboxEntryRow.json": OutboxEntryRow{
+			ID:            "entry-1",
+			Kind:          "update_state",
+			Identifier:    "ENG-1",
+			TargetState:   "Done",
+			Attempts:      2,
+			LastError:     "tracker: 500 internal server error",
+			Degraded:      false,
+			EnqueuedAt:    at,
+			NextAttemptAt: at.Add(20 * time.Second),
+			LastFailedAt:  &lastFailedAt,
+		},
+		// CORE-091 — totals with a Claude cost and a Codex run (cost-unknown),
+		// and a daemon that has seen no Claude cost yet (null, never omitted).
+		"Totals.json": TotalsRow{
+			InputTokens: 12000, OutputTokens: 3400, CostUSDEstimated: fptr(0.4213),
+			CostCoverage: TotalsCoverageRow{ClaudeRuns: 3, CodexRuns: 1},
+		},
+		"TotalsCostUnknown.json": TotalsRow{InputTokens: 500, OutputTokens: 40, CostCoverage: TotalsCoverageRow{CodexRuns: 1}},
+		// CORE-175 — one acknowledgement row.
+		"FailureAckRow.json": FailureAckRow{Identifier: "ENG-1", UpTo: at},
+		"FailureRow.json": FailureRow{
+			Kind:       "outbox",
+			Identifier: "ENG-1",
+			Source:     "comment",
+			Message:    "outbox comment delivery failed, will retry: linear: 502",
+			OccurredAt: at,
+			RecordedAt: lastFailedAt,
+			Count:      3,
+		},
+		// CORE-055 — a limited breaker (published reset), a healthy row
+		// (limitedUntil null, never omitted) and an auto-switch row.
+		"BackendHealthRow.json": BackendHealthRow{
+			Backend:        "claude",
+			Host:           "build-1",
+			Status:         BackendHealthLimited,
+			Kind:           "quota",
+			LimitType:      "five_hour",
+			LimitedUntil:   &resetAt,
+			RetryAt:        &resetAt,
+			Since:          tptr(at),
+			ProbeIssue:     "",
+			HeldIssues:     2,
+			ReroutedIssues: 1,
+		},
+		"BackendHealthRowHealthy.json": BackendHealthRow{Backend: "codex", Status: BackendHealthHealthy},
+		"AutoSwitchRow.json": AutoSwitchRow{
+			Identifier:  "ENG-3",
+			Source:      "backend_fallback",
+			FromBackend: "claude",
+			FromProfile: "coder",
+			ToBackend:   "codex",
+			ToProfile:   "coder-codex",
+			Reason:      "backend_fallback: claude limited until 2026-05-25T12:10:00Z",
+			SwitchedAt:  tptr(at),
+		},
+		"TrackerErrorRow.json": TrackerErrorRow{
+			At:                  at,
+			Op:                  "poll",
+			Kind:                "rate_limited",
+			Message:             "tracker: linear rate limited",
+			ResetAt:             &resetAt,
+			ConsecutiveFailures: 2,
 		},
 	}
 
@@ -184,3 +263,5 @@ func fixturesDir(t *testing.T) string {
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	return filepath.Join(repoRoot, "web", "src", "types", "fixtures")
 }
+
+func fptr(f float64) *float64 { return &f }

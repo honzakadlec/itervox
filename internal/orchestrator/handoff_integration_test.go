@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workspace"
@@ -32,7 +32,7 @@ type promptCaptureRunner struct {
 	done    chan struct{}
 }
 
-func (r *promptCaptureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *promptCaptureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	r.prompts = append(r.prompts, prompt)
@@ -211,7 +211,7 @@ type chainingRunner struct {
 	done         chan int
 }
 
-func (r *chainingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *chainingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	r.prompts = append(r.prompts, prompt)
@@ -488,7 +488,7 @@ type alwaysFailingRunner struct {
 	calls atomic.Int64
 }
 
-func (r *alwaysFailingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *alwaysFailingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.calls.Add(1)
 	// FailureText must be non-empty — the worker treats Failed=true with
 	// empty FailureText and zero tokens as "clean session end" rather than
@@ -502,19 +502,19 @@ func (r *alwaysFailingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(
 	}, nil
 }
 
-// mustGit runs `git -C dir args...` and fails the test on error.
+// mustGit runs `git args...` in dir and fails the test on error.
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := gitexec.Command(context.Background(), dir, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
 }
 
-// gitOutput runs `git -C dir args...` and returns trimmed stdout, failing on error.
+// gitOutput runs `git args...` in dir and returns trimmed stdout, failing on error.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := gitexec.Command(context.Background(), dir, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)

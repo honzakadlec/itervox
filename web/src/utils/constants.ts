@@ -10,6 +10,10 @@ import type {
   DependencyGraphEdge,
   AutomationQueueRow,
   DependencyAuditRow,
+  DependencyCycleRow,
+  DependencyAttentionRow,
+  OutboxEntryRow,
+  FailureRow,
 } from '../types/schemas';
 
 /**
@@ -41,3 +45,11 @@ export const EMPTY_DEPS_NODES: DependencyGraphNode[] = [];
 export const EMPTY_DEPS_EDGES: DependencyGraphEdge[] = [];
 export const EMPTY_AUTOMATION_QUEUE: AutomationQueueRow[] = [];
 export const EMPTY_DEPENDENCY_AUDIT: DependencyAuditRow[] = [];
+// critical-path-ordering Task 6 — stable empty fallback for the DepsGraph
+// cycle-member edge highlight, following the same pattern as the constants
+// above.
+export const EMPTY_DEPENDENCY_CYCLES: DependencyCycleRow[] = [];
+export const EMPTY_DEPENDENCY_ATTENTION: DependencyAttentionRow[] = [];
+// outbox Task 4 — stable empty fallback for the Outbox panel.
+export const EMPTY_OUTBOX_ENTRIES: OutboxEntryRow[] = [];
+export const EMPTY_RECENT_FAILURES: FailureRow[] = [];
