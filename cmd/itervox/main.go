@@ -797,7 +797,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 				return nil, nil
 			}
 			snap := orch.Snapshot()
-			ti := app.EnrichIssue(*issue, snap, time.Now(), cfg)
+			ti := app.EnrichIssue(*issue, snap, time.Now(), cfg, orch.ProfilesCfg())
 			ti.StatusChanges = statusChangeRows(snap.IssueStatusHistory[issue.Identifier])
 			return &ti, nil
 		}
@@ -979,6 +979,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				SessionID:     r.SessionID,
 				WorkerHost:    r.WorkerHost,
 				Backend:       r.Backend,
+				Profile:       r.ProfileName,
 				Kind:          r.Kind,
 				AutomationID:  r.AutomationID,
 				TriggerType:   r.TriggerType,

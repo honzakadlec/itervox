@@ -96,3 +96,20 @@ func TestBufLogger_Info_WritesToBuffer(t *testing.T) {
 	assert.Len(t, lines, 1)
 	assert.Contains(t, lines[0], "INFO")
 }
+
+// A profile with sub_agents: false (e.g. a tool-restricted tester that has no
+// Task tool) gets no roster, so the prompt never offers peers it cannot spawn.
+func TestBuildSubAgentContext_OmittedWhenActiveProfileDisablesSubAgents(t *testing.T) {
+	off := false
+	ctx := buildSubAgentContext(map[string]config.AgentProfile{
+		"tester":      {Prompt: "QA operator", SubAgents: &off},
+		"implementer": {Prompt: "Engineer"},
+	}, "tester", "claude")
+	assert.Empty(t, ctx)
+
+	ctx = buildSubAgentContext(map[string]config.AgentProfile{
+		"tester":      {Prompt: "QA operator", SubAgents: &off},
+		"implementer": {Prompt: "Engineer"},
+	}, "implementer", "claude")
+	assert.Contains(t, ctx, "**tester**", "other profiles keep their roster")
+}

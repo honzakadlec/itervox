@@ -1263,3 +1263,21 @@ func TestParseAgentProfiles_AutoReview(t *testing.T) {
 		"auto_review must default to true when absent")
 	assert.False(t, config.ProfileAutoReview(cfg.Agent.Profiles["tester"]))
 }
+
+func TestParseAgentProfiles_SubAgents(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    implementer:
+      command: claude --model claude-sonnet-4-6
+    tester:
+      command: claude --model claude-sonnet-4-6
+      sub_agents: false
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Agent.Profiles)
+	assert.True(t, config.ProfileSubAgents(cfg.Agent.Profiles["implementer"]),
+		"sub_agents must default to true when absent")
+	assert.False(t, config.ProfileSubAgents(cfg.Agent.Profiles["tester"]))
+}

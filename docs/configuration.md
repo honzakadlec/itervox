@@ -120,6 +120,7 @@ script.
 | `allowed_actions` | Optional list of daemon-backed actions: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | Required when `allowed_actions` includes `create_issue`; the tracker state/column for follow-up issues. |
 | `auto_review` | Optional boolean, default `true`. `false` stops a successful run of this profile from queueing the reviewer even with `agent.auto_review: true`. |
+| `sub_agents` | Optional boolean, default `true`. `false` leaves the "Available Sub-Agents" roster (the other profiles, spawnable via Task / `spawn_agent`) out of this profile's prompt. Use it for profiles whose command cannot spawn sub-agents, e.g. a tool-restricted wrapper. |
 
 An issue labelled `profile::<name>` is dispatched with profile `<name>`. Precedence: dashboard/automatic per-issue profile, then the label, then `default_profile`; an unknown or disabled name is logged and ignored. Hooks receive the run's profile as `ITERVOX_PROFILE`.
 

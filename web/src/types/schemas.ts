@@ -56,6 +56,7 @@ export const RunningRowSchema = z.object({
   sessionId: z.string().optional(), // omitempty — absent until session starts
   workerHost: z.string().optional(), // omitempty — absent for local execution
   backend: z.string().optional(), // omitempty — absent when unknown
+  profile: z.string().optional(), // omitempty — resolved agent profile
   kind: z.string().optional(), // omitempty — "worker" (default) | "reviewer" | "automation"
   subagentCount: z.number().optional(), // omitempty — 0 when no subagents
   elapsedMs: z.number(),
@@ -142,6 +143,8 @@ export const ProfileDefSchema = z.object({
   createIssueState: z.string().optional(),
   // agent.profiles.<name>.auto_review; omitted on upsert keeps the server value.
   autoReview: z.boolean().optional(),
+  // agent.profiles.<name>.sub_agents; omitted on upsert keeps the server value.
+  subAgents: z.boolean().optional(),
 });
 
 export const ModelOptionSchema = z.object({

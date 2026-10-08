@@ -82,10 +82,15 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		// The dashboard editor does not send autoReview yet; keep the
 		// profile's WORKFLOW.md value unless the request sets it.
 		AutoReview: existingProfile.AutoReview,
+		SubAgents:  existingProfile.SubAgents,
 	}
 	if def.AutoReview != nil {
 		autoReview := *def.AutoReview
 		nextProfile.AutoReview = &autoReview
+	}
+	if def.SubAgents != nil {
+		subAgents := *def.SubAgents
+		nextProfile.SubAgents = &subAgents
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {
@@ -226,6 +231,7 @@ func profileDefFromConfig(p config.AgentProfile) server.ProfileDef {
 		AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
 		CreateIssueState: p.CreateIssueState,
 		AutoReview:       boolPtrCopy(config.ProfileAutoReview(p)),
+		SubAgents:        boolPtrCopy(config.ProfileSubAgents(p)),
 	}
 }
 

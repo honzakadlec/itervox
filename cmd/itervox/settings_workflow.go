@@ -31,6 +31,7 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			AllowedActions:   config.NormalizeAllowedActions(profile.AllowedActions),
 			CreateIssueState: strings.TrimSpace(profile.CreateIssueState),
 			AutoReview:       profile.AutoReview,
+			SubAgents:        profile.SubAgents,
 		}
 	}
 	return out

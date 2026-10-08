@@ -375,7 +375,7 @@ func TestEnrichIssue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ti := EnrichIssue(tt.issue, tt.snap, now, tt.cfg)
+			ti := EnrichIssue(tt.issue, tt.snap, now, tt.cfg, nil)
 			// Common assertions
 			if ti.Identifier != tt.issue.Identifier {
 				t.Fatalf("Identifier mismatch: got %q", ti.Identifier)

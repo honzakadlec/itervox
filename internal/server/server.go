@@ -35,7 +35,8 @@ type RunningRow struct {
 	SessionID     string    `json:"sessionId,omitempty"`
 	WorkerHost    string    `json:"workerHost,omitempty"`
 	Backend       string    `json:"backend,omitempty"`
-	Kind          string    `json:"kind,omitempty"` // "worker" (default) | "reviewer" | "automation"
+	Profile       string    `json:"profile,omitempty"` // resolved agent profile; empty = bare agent.command
+	Kind          string    `json:"kind,omitempty"`    // "worker" (default) | "reviewer" | "automation"
 	SubagentCount int       `json:"subagentCount,omitempty"`
 	// AutomationID is set when the run was dispatched by a configured
 	// automation rule (cron, input_required, run_failed, …). Empty for
@@ -916,6 +917,9 @@ type ProfileDef struct {
 	// AutoReview mirrors agent.profiles.<name>.auto_review. On upsert, nil
 	// keeps the profile's current value.
 	AutoReview *bool `json:"autoReview,omitempty"`
+	// SubAgents mirrors agent.profiles.<name>.sub_agents. On upsert, nil keeps
+	// the profile's current value.
+	SubAgents *bool `json:"subAgents,omitempty"`
 }
 
 type AutomationTriggerDef = automationdef.Trigger
@@ -977,7 +981,8 @@ type TrackerIssue struct {
 	Comments         []CommentRow           `json:"comments,omitempty"`
 	StatusChanges    []IssueStatusChangeRow `json:"statusChanges,omitempty"`
 	IneligibleReason string                 `json:"ineligibleReason,omitempty"`
-	// AgentProfile is the name of the per-issue agent profile override, if any.
+	// AgentProfile is the issue's effective agent profile: the per-issue
+	// override, else the running run's profile, else a profile::<name> label.
 	AgentProfile string `json:"agentProfile,omitempty"`
 	// AgentBackend is the per-issue backend override, if any ("claude" or "codex").
 	AgentBackend string `json:"agentBackend,omitempty"`

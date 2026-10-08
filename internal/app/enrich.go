@@ -16,7 +16,8 @@ import (
 // EnrichIssue maps a domain.Issue to a server.TrackerIssue, overlaying live
 // orchestrator state (running, retrying, paused, idle) and ineligibility reasons.
 // now is the current wall-clock time used to compute ElapsedMs for running issues.
-func EnrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg *config.Config) server.TrackerIssue {
+// profiles (cfg.Agent.Profiles copy) resolves profile::<name> labels.
+func EnrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg *config.Config, profiles map[string]config.AgentProfile) server.TrackerIssue {
 	ti := server.TrackerIssue{
 		Identifier: issue.Identifier,
 		Title:      issue.Title,
@@ -53,9 +54,14 @@ func EnrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg
 		}
 		ti.Comments = append(ti.Comments, row)
 	}
-	// Per-issue agent profile override.
+	// Effective agent profile: the per-issue override, else the running run's
+	// profile, else a profile::<name> label (same precedence as dispatch).
 	if profileName, ok := snap.IssueProfiles[issue.Identifier]; ok && profileName != "" {
 		ti.AgentProfile = profileName
+	} else if re, ok := snap.Running[issue.ID]; ok && re.ProfileName != "" {
+		ti.AgentProfile = re.ProfileName
+	} else {
+		ti.AgentProfile = orchestrator.LabelProfile(issue.Labels, profiles)
 	}
 	// Per-issue agent backend override.
 	if backendName, ok := snap.IssueBackends[issue.Identifier]; ok && backendName != "" {

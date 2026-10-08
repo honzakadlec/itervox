@@ -484,6 +484,9 @@ type ProfileEntry struct {
 	// AutoReview, when false, is written as auto_review: false. Nil or true
 	// omits the field (default true).
 	AutoReview *bool
+	// SubAgents, when false, is written as sub_agents: false. Nil or true
+	// omits the field (default true).
+	SubAgents *bool
 }
 
 type AutomationTriggerEntry = automationdef.Trigger
@@ -581,6 +584,9 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				}
 				if entry.AutoReview != nil && !*entry.AutoReview {
 					replacement = append(replacement, lvl3+"auto_review: false")
+				}
+				if entry.SubAgents != nil && !*entry.SubAgents {
+					replacement = append(replacement, lvl3+"sub_agents: false")
 				}
 				if entry.Prompt != "" {
 					replacement = append(replacement, lvl3+"prompt: "+strconv.Quote(entry.Prompt))

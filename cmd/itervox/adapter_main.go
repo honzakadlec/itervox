@@ -51,10 +51,11 @@ func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.Tracker
 		return nil, err
 	}
 	snap := a.orch.Snapshot()
+	profiles := a.orch.ProfilesCfg()
 	now := time.Now()
 	result := make([]server.TrackerIssue, len(issues))
 	for i, issue := range issues {
-		result[i] = app.EnrichIssue(issue, snap, now, a.cfg)
+		result[i] = app.EnrichIssue(issue, snap, now, a.cfg, profiles)
 	}
 	return result, nil
 }

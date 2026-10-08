@@ -2029,7 +2029,7 @@ func resolveResumeCommand(entry *InputRequiredEntry, cfg *config.Config, cfgMu *
 }
 
 func buildSubAgentContext(profiles map[string]config.AgentProfile, activeProfile string, backend string) string {
-	if len(profiles) == 0 {
+	if len(profiles) == 0 || !config.ProfileSubAgents(profiles[activeProfile]) {
 		return ""
 	}
 	toolName := "Task"

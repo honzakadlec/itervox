@@ -158,6 +158,14 @@ export default function RunningSessionsTable() {
                   Review
                 </span>
               )}
+              {row.profile && row.kind !== 'reviewer' && (
+                <span
+                  className="text-theme-text-secondary rounded bg-[var(--bg-soft)] px-1.5 py-0.5 font-mono text-[9px]"
+                  title={`Agent profile: ${row.profile}`}
+                >
+                  {row.profile}
+                </span>
+              )}
               <Badge color={stateBadgeColor(row.state)} size="sm">
                 {row.state}
               </Badge>

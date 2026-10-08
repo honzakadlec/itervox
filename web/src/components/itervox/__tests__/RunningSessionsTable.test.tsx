@@ -188,6 +188,19 @@ describe('RunningSessionsTable', () => {
     expect(screen.queryByText('Review')).not.toBeInTheDocument();
   });
 
+  it('shows the agent profile badge for a worker run', () => {
+    const testerRow: RunningRow = { ...baseRow, kind: 'worker', profile: 'tester' };
+    withSnapshot({ running: [testerRow] });
+    render(<RunningSessionsTable />, { wrapper: makeWrapper() });
+    expect(screen.getByTitle('Agent profile: tester')).toHaveTextContent('tester');
+  });
+
+  it('shows no profile badge when the run has no profile', () => {
+    withSnapshot({ running: [{ ...baseRow, kind: 'worker' }] });
+    render(<RunningSessionsTable />, { wrapper: makeWrapper() });
+    expect(screen.queryByTitle(/^Agent profile:/)).not.toBeInTheDocument();
+  });
+
   it('shows dash when turnCount is null', () => {
     const noTurnRow: RunningRow = { ...baseRow, turnCount: null as any };
     withSnapshot({ running: [noTurnRow] });

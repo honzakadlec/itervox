@@ -152,6 +152,11 @@ type AgentProfile struct {
 	// queueing the reviewer even with agent.auto_review on (ops/test profiles
 	// that produce no code). Nil means true; read via ProfileAutoReview.
 	AutoReview *bool
+	// SubAgents, when false, leaves the "Available Sub-Agents" roster out of
+	// this profile's prompt, for profiles whose runner cannot spawn them (e.g. a
+	// tool-restricted wrapper without Task). Nil means true; read via
+	// ProfileSubAgents.
+	SubAgents *bool
 }
 
 // AgentConfig holds agent runner settings.
@@ -698,6 +703,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				AllowedActions:   allowed,
 				CreateIssueState: strField(m, "create_issue_state", ""),
 				AutoReview:       boolPtr(boolField(m, "auto_review", true)),
+				SubAgents:        boolPtr(boolField(m, "sub_agents", true)),
 			}
 			continue
 		}
@@ -713,6 +719,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
 			CreateIssueState: strField(m, "create_issue_state", ""),
 			AutoReview:       boolPtr(boolField(m, "auto_review", true)),
+			SubAgents:        boolPtr(boolField(m, "sub_agents", true)),
 		}
 	}
 	if len(profiles) == 0 {
@@ -753,6 +760,12 @@ func ProfileEnabled(profile AgentProfile) bool {
 // the reviewer. Nil AutoReview means true.
 func ProfileAutoReview(profile AgentProfile) bool {
 	return profile.AutoReview == nil || *profile.AutoReview
+}
+
+// ProfileSubAgents reports whether the profile's prompt lists the other
+// profiles as spawnable sub-agents. Nil SubAgents means true.
+func ProfileSubAgents(profile AgentProfile) bool {
+	return profile.SubAgents == nil || *profile.SubAgents
 }
 
 // parseAvailableModels parses the agent.available_models YAML field.

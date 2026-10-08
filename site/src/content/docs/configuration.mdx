@@ -327,6 +327,7 @@ An issue can also pick its profile from the tracker: a label `profile::<name>` (
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `mark_merged`, `merge_pr`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |
 | `auto_review` | boolean | Optional, default `true`. Set `false` so a successful run of this profile never queues the reviewer, even with `agent.auto_review: true` (e.g. a tester or ops profile that produces no code). |
+| `sub_agents` | boolean | Optional, default `true`. Set `false` to leave the "Available Sub-Agents" roster (the other profiles, spawnable via Task / `spawn_agent`) out of this profile's prompt — for profiles whose command cannot spawn sub-agents, e.g. a tool-restricted wrapper. |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same Liquid bindings as the main `WORKFLOW.md` prompt. Automation `instructions` are appended after the selected profile files. `agent.profiles.*.prompt` is legacy input for `itervox init --update`; schema `2` rejects it at daemon startup.
 
