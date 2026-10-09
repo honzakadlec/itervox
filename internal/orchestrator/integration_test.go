@@ -934,20 +934,19 @@ func TestRecoveredTrackerReplySkipsSameAuthorCommentsAndUsesExactQuestionComment
 		t.Fatal("orch1 did not exit within 2s of cancel")
 	}
 
-	// Decoy: a second 🤖-prefixed comment from a DIFFERENT author, landing
-	// after the real question but before the follow-up/reply. A prefix
-	// fallback (findLatestItervoxQuestionComment) would pick THIS as "the
-	// question" — it's the latest comment with the itervoxCommentPrefix at
-	// this point. Its author differs from the real question's author, so if
-	// it were mistakenly used, sameCommentAuthor would fail to filter the
-	// "same bot author" follow-up below, and that follow-up (not the human's
-	// reply) would be treated as the answer. Seeding QuestionCommentID (fix
+	// The human answers the real question; then a decoy — a second
+	// 🤖-prefixed comment from a DIFFERENT author — lands, followed by an
+	// Itervox follow-up from the question's author. A prefix fallback
+	// (findLatestItervoxQuestionComment) would pick the decoy as "the
+	// question" (the latest prefixed comment), find only the managed
+	// follow-up after it and never resume. Seeding QuestionCommentID (fix
 	// round 1, item c) below must prevent that: exact-id resolution ignores
-	// this decoy entirely.
+	// the decoy, finds the human reply after the real question, and skips the
+	// follow-up because it carries the managed marker.
+	ct.addComment("id1", "Approved via tracker comment from a human.", "human-user-1", "Alice")
 	ct.addComment("id1", "🤖 **Agent needs your input**\n\nA stale duplicate question from a decoy source.",
 		"decoy-bot", "Decoy Bot")
-	ct.addComment("id1", "Follow-up from the same bot author.", questionComment.AuthorID, questionComment.AuthorName)
-	ct.addComment("id1", "Approved via tracker comment from a human.", "human-user-1", "Alice")
+	ct.addComment("id1", tracker.MarkManagedComment("Follow-up from the same bot author."), questionComment.AuthorID, questionComment.AuthorName)
 
 	// Seed the persisted entry's question_comment_id with the REAL question's
 	// exact tracker comment id. Task 3 no longer records this automatically

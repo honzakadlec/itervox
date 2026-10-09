@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,6 +104,59 @@ func TestFindReplySkipsManagedCommentWithoutAuthor(t *testing.T) {
 	// reply yet — must not be found.
 	comments = []domain.Comment{question, managedReply}
 	_, found = findReplyAfterQuestion(comments, 0, question)
+	assert.False(t, found)
+}
+
+// Itervox posting with the operator's own tracker token (one GitLab PAT for
+// the daemon and the human) gives the question and the human's reply the same
+// author. The question carries the managed marker, so the marker — not the
+// author — tells them apart, and the reply must resume the agent.
+func TestFindReplyAcceptsSameAuthorReplyToManagedQuestion(t *testing.T) {
+	createdAt := time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC)
+	question := domain.Comment{
+		ID:         "q1",
+		Body:       tracker.MarkManagedComment(itervoxCommentPrefix + "\n\nWhich file?"),
+		AuthorID:   "jan",
+		AuthorName: "jan.kadlec",
+		CreatedAt:  &createdAt,
+	}
+	itervoxFollowUp := domain.Comment{
+		ID:         "m1",
+		Body:       tracker.MarkManagedComment("Opened MR !722"),
+		AuthorID:   "jan",
+		AuthorName: "jan.kadlec",
+	}
+	replyAt := createdAt.Add(time.Minute)
+	humanReply := domain.Comment{
+		ID:         "h1",
+		Body:       "Continue with main.go",
+		AuthorID:   "jan",
+		AuthorName: "jan.kadlec",
+		CreatedAt:  &replyAt,
+	}
+	comments := []domain.Comment{question, itervoxFollowUp, humanReply}
+
+	reply, found := findReplyAfterQuestion(comments, 0, question)
+	require.True(t, found, "same-account human reply to a managed question must count")
+	assert.Equal(t, "Continue with main.go", reply.Body)
+
+	reply, found = findReplySince(comments, createdAt, question)
+	require.True(t, found, "keyed path must accept the same-account reply too")
+	assert.Equal(t, "Continue with main.go", reply.Body)
+}
+
+// A question without the managed marker predates marking, so its author is
+// the only way to tell Itervox's own unmarked follow-ups from a reply.
+func TestFindReplySkipsSameAuthorFollowUpToLegacyUnmarkedQuestion(t *testing.T) {
+	question := domain.Comment{ID: "q1", Body: itervoxCommentPrefix + "\n\nWhich file?", AuthorID: "bot"}
+	botFollowUp := domain.Comment{ID: "b1", Body: "Follow-up from the bot", AuthorID: "bot"}
+	humanReply := domain.Comment{ID: "h1", Body: "real answer", AuthorID: "human-1"}
+
+	reply, found := findReplyAfterQuestion([]domain.Comment{question, botFollowUp, humanReply}, 0, question)
+	require.True(t, found)
+	assert.Equal(t, "real answer", reply.Body)
+
+	_, found = findReplyAfterQuestion([]domain.Comment{question, botFollowUp}, 0, question)
 	assert.False(t, found)
 }
 

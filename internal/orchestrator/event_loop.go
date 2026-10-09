@@ -824,6 +824,22 @@ func findTrackedQuestionComment(comments []domain.Comment, entry *InputRequiredE
 	return findLatestItervoxQuestionComment(comments)
 }
 
+// isQuestionAuthorFollowUp reports whether comment is another post by the
+// question's author rather than a reply to it.
+//
+// A question carrying the managed-comment marker came from an Itervox that
+// marks everything it writes, so the marker alone tells Itervox's comments
+// from human ones and the author is no signal: when Itervox posts with the
+// operator's own token (one shared tracker account), the human's reply has
+// the question's author too and must still count. Only a legacy question
+// without the marker falls back to the author check.
+func isQuestionAuthorFollowUp(comment, question domain.Comment) bool {
+	if tracker.IsManagedComment(question) {
+		return false
+	}
+	return sameCommentAuthor(comment, question)
+}
+
 func sameCommentAuthor(a, b domain.Comment) bool {
 	if a.AuthorID != "" && b.AuthorID != "" {
 		return a.AuthorID == b.AuthorID
@@ -851,7 +867,7 @@ func findReplyAfterQuestion(comments []domain.Comment, questionIdx int, question
 			// self-resume on its own comment.
 			continue
 		}
-		if sameCommentAuthor(comment, question) {
+		if isQuestionAuthorFollowUp(comment, question) {
 			continue
 		}
 		return comment, true
@@ -874,8 +890,8 @@ func findReplyAfterQuestion(comments []domain.Comment, questionIdx int, question
 // an older comment (which would need skew wider than the gap between the
 // previous round's reply and this question). The same exclusions as
 // findReplyAfterQuestion apply (Itervox prefix, managed marker, and the
-// question's own author when the question is known — pass a zero Comment
-// when it is not, which disables the author check).
+// question's own author for a legacy unmarked question — pass a zero Comment
+// when the question is not known, which disables the author check).
 func findReplySince(comments []domain.Comment, since time.Time, question domain.Comment) (domain.Comment, bool) {
 	if since.IsZero() {
 		return domain.Comment{}, false
@@ -887,7 +903,7 @@ func findReplySince(comments []domain.Comment, since time.Time, question domain.
 		if strings.HasPrefix(comment.Body, itervoxCommentPrefix) || tracker.IsManagedComment(comment) {
 			continue
 		}
-		if sameCommentAuthor(comment, question) {
+		if isQuestionAuthorFollowUp(comment, question) {
 			continue
 		}
 		return comment, true
