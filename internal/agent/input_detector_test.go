@@ -189,3 +189,54 @@ func TestDetectInputRequiredFallback_GenuineApprovalAndChoiceRequestsStillBlock(
 		assert.NotEmpty(t, decision.Question)
 	}
 }
+
+// A finished run's summary is often one markdown bullet list. Any bullet list
+// scored "includes reply options", so a single weak cue inside a bullet ("the
+// CI job needs to confirm it") reached the threshold and parked a completed
+// run as input-required (appserver#29). A list is reply options only when
+// text outside it asks for something.
+func TestDetectInputRequiredFallback_BulletedSummaryIsNotBlocking(t *testing.T) {
+	for _, output := range []string{
+		`Both MRs are open into the integration branch, and the old MRs are closed as superseded.
+
+- **MRs:** appserver !722 and plugin !167, each with a merge-order section.
+- **Go tests:** all named tests passed under -race.
+- **Not verified locally:** I could not run the plugin unit test, so the CI unit-test job needs to confirm it.
+- **Handoff:** written to .itervox/handoff/2026-10-09_implementer.md.`,
+		`Both MRs are open into the integration branch.
+- **Review:** got approval from the reviewer profile.
+- **Checks:** go test and go vet pass.`,
+		`Done.
+
+1. Added the migration.
+2. Ran it locally to confirm it is idempotent.
+3. Pushed the branch.`,
+	} {
+		decision := agent.DetectInputRequiredFallback(output)
+		assert.False(t, decision.NeedsInput, "successful run flagged as input-required: %q (reason %q)", output, decision.Reason)
+		assert.Empty(t, decision.Question)
+	}
+}
+
+// Guard: options with an ask outside the list, or a direct ask inside a
+// bullet, still block.
+func TestDetectInputRequiredFallback_GenuineOptionListsStillBlock(t *testing.T) {
+	for _, output := range []string{
+		`Which one should I use?
+- Rotate the secret
+- Extend the TTL`,
+		`Two ways forward:
+
+1. Rebase onto main
+2. Merge main in
+
+Which one?`,
+		`Summary of the blocker:
+- The migration drops a column.
+- Should I run it against production?`,
+	} {
+		decision := agent.DetectInputRequiredFallback(output)
+		assert.True(t, decision.NeedsInput, "genuine prompt not detected: %q", output)
+		assert.NotEmpty(t, decision.Question)
+	}
+}

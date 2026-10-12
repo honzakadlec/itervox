@@ -284,6 +284,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	if automation != nil && automation.Trigger.Type == config.AutomationTriggerBlockersResolved {
 		profileMoveIssueState = strings.TrimSpace(automation.MoveToState)
 	}
+	// resumeAgentCommand is what an input-required entry persists for the
+	// resumed run. It must not carry the action bridge env below: that token
+	// is revoked when this run exits, and a stale ITERVOX_ACTION_TOKEN left in
+	// the stored command would shadow the resumed run's fresh one (the shell
+	// honours the last assignment), failing every action with unknown_token.
+	resumeAgentCommand := agentCommand
 	actionContext := ""
 	if len(profileAllowedActions) > 0 {
 		if workerHost != "" {
@@ -706,7 +712,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				runLogID,
 				claudeSessionID,
 				backend,
-				agentCommand,
+				resumeAgentCommand,
 				workerHost,
 				profileName,
 				activeBranchName,
@@ -795,7 +801,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			attempt,
 			result,
 			backend,
-			agentCommand,
+			resumeAgentCommand,
 			workerHost,
 			profileName,
 			activeBranchName,

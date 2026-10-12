@@ -183,7 +183,7 @@ func DetectInputRequiredFallback(assistantOutput string) InputRequiredDecision {
 		score++
 		reasons = append(reasons, "mentions continuing or proceeding")
 	}
-	if choiceListLinePattern.MatchString(candidate) {
+	if choiceListLinePattern.MatchString(candidate) && asksOutsideList(candidate) {
 		score++
 		reasons = append(reasons, "includes reply options")
 	}
@@ -265,6 +265,35 @@ func isLikelyBlockingTail(lower, original string) bool {
 		containsAny(lower, blockingContinuationCues) ||
 		containsAny(lower, weakContinuationCues) ||
 		endsWithQuestion(original)
+}
+
+// asksOutsideList reports whether the text around a list — its lead-in or
+// trailing lines — carries a prompt cue or a question. A choice list is only
+// reply options when something outside it asks the human to pick; a finished
+// run's summary is often nothing but bullets, and a weak cue inside one of
+// them ("the CI job needs to confirm it") is no ask at all. Indented lines
+// that follow a list item are its continuation, not surrounding text.
+func asksOutsideList(candidate string) bool {
+	var outside []string
+	inItem := false
+	for _, line := range strings.Split(candidate, "\n") {
+		switch {
+		case choiceListLinePattern.MatchString(line):
+			inItem = true
+		case inItem && strings.TrimSpace(line) != "" && line != strings.TrimLeft(line, " \t"):
+			// continuation of the current item
+		default:
+			inItem = false
+			if strings.TrimSpace(line) != "" {
+				outside = append(outside, line)
+			}
+		}
+	}
+	if len(outside) == 0 {
+		return false
+	}
+	text := strings.Join(outside, "\n")
+	return isLikelyBlockingTail(normalizeDetectorText(text), text)
 }
 
 func isChoiceListParagraph(paragraph string) bool {
