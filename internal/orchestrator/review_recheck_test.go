@@ -91,3 +91,19 @@ func TestParkedReviewRecheckIgnoresOtherTransitions(t *testing.T) {
 	assert.False(t, state.ReviewRecheckPending)
 	assert.Empty(t, state.PendingReviews, "auto_review off: nothing is re-queued")
 }
+
+// TestParkedReviewRecheckHonoursRequiredLabel: daemons sharing one tracker
+// project split it by tracker.required_label. A sibling landing on this
+// daemon must not re-queue another daemon's parked reviews.
+func TestParkedReviewRecheckHonoursRequiredLabel(t *testing.T) {
+	ours := domain.Issue{ID: "id-1", Identifier: "ENG-1", Title: "T", State: "In Review", Labels: []string{"platform::woo"}}
+	theirs := domain.Issue{ID: "id-2", Identifier: "ENG-2", Title: "T", State: "In Review", Labels: []string{"platform::magento"}}
+	o, state, _ := reviewRecheckHarness(t, ours, theirs)
+	o.cfg.Tracker.RequiredLabel = "Platform::Woo"
+
+	state.ReviewRecheckPending = true
+	o.requeueParkedReviews(context.Background(), &state, time.Now())
+
+	assert.Contains(t, state.PendingReviews, "ENG-1", "required label matches case-insensitively")
+	assert.NotContains(t, state.PendingReviews, "ENG-2", "issue without the required label belongs to another daemon")
+}
