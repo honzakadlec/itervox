@@ -684,6 +684,13 @@ type State struct {
 	// admission is open again (normally after the restart). Event loop only.
 	PendingReviews map[string]PendingReview
 
+	// ReviewRecheckPending is set when an issue moves from
+	// tracker.review_state to completion_state (its MR landed, so the shared
+	// integration branch moved and merge-order blockers may have cleared).
+	// The next tick re-queues every other issue parked in review_state as a
+	// PendingReview. Session-scoped, event loop only.
+	ReviewRecheckPending bool
+
 	// DependencyCycles holds this tick's strongly-connected-component cycle
 	// alerts over the tick graph (sorted by first member). Recomputed every
 	// tick by ExtractCycles from the tick graph built in onTick; DetectedAt
