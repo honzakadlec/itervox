@@ -62,8 +62,16 @@ func (o *Orchestrator) requeueParkedReviews(ctx context.Context, state *State, n
 		return
 	}
 	state.ReviewRecheckPending = false
+	o.cfgMu.RLock()
+	requiredLabel := o.cfg.Tracker.RequiredLabel
+	o.cfgMu.RUnlock()
 	for _, issue := range issues {
 		if !strings.EqualFold(issue.State, reviewState) {
+			continue
+		}
+		// The fetch spans the whole project; daemons sharing it split it by
+		// required_label, so another daemon's parked reviews are not ours.
+		if requiredLabel != "" && !hasLabelFold(issue.Labels, requiredLabel) {
 			continue
 		}
 		if _, running := state.Running[issue.ID]; running {
