@@ -127,6 +127,15 @@ only the event loop mutates them.
   draining. It is event-loop state persisted to `pending_reviews.json` (ledger
   writer) and re-dispatched by `resumePendingReviews` once admission reopens;
   the marker is cleared when any reviewer for that issue starts.
+- **Parked-review recheck.** An issue left in `tracker.review_state` (its
+  reviewer could not merge yet: merge-order blocker open, CI red on a stale
+  base) is never polled again. When any issue moves `review_state` →
+  `completion_state`, `noteReviewLanded` sets `State.ReviewRecheckPending`
+  (session-scoped); the next tick's `requeueParkedReviews` fetches
+  `review_state` issues and records each idle one as a `PendingReview`
+  (skipping `auto_review: false` profiles, and doing nothing when
+  `agent.auto_review` is off), so `resumePendingReviews` re-runs its reviewer.
+  At most one re-review per issue per sibling landing — no loop.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is

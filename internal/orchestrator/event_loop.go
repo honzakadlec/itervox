@@ -338,6 +338,8 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		state = o.checkTrackerReplies(ctx, state)
 	}
 	state = o.processPendingInputResumes(ctx, state, now)
+	// Reviews parked in review_state get another pass once a sibling lands.
+	o.requeueParkedReviews(ctx, &state, now)
 	// M4-close BH-M4-2: reviews refused by a drain run before new work.
 	o.resumePendingReviews(ctx, &state, now)
 	o.drainAutomationQueueWithCandidates(ctx, &state, now, candidateIssues)
@@ -1938,6 +1940,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventIssueStatusChanged:
 		if ev.StatusChange != nil {
 			appendIssueStatusChange(&state, *ev.StatusChange)
+			o.noteReviewLanded(&state, *ev.StatusChange)
 		}
 
 	case EventDependencyAuditRefreshed:
