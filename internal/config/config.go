@@ -809,6 +809,15 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Workspace.Worktree = boolField(ws, "worktree", false)
 	cfg.Workspace.CloneURL = strField(ws, "clone_url", "")
 	cfg.Workspace.BaseBranch = strField(ws, "base_branch", "main")
+	// $VAR lets the release branch move with the daemon env (.itervox/.env)
+	// instead of WORKFLOW.md. Unset is an error: silently branching from
+	// "main" would base every worktree on the wrong line.
+	if m := envVarRe.FindStringSubmatch(cfg.Workspace.BaseBranch); m != nil {
+		cfg.Workspace.BaseBranch = os.Getenv(m[1])
+		if cfg.Workspace.BaseBranch == "" {
+			return nil, fmt.Errorf("config: workspace.base_branch references $%s, which is not set", m[1])
+		}
+	}
 
 	// Agent
 	agent := nestedMap(raw, "agent")

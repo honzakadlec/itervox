@@ -112,3 +112,52 @@ func TestResumedInputRequiredRunGetsLiveActionToken(t *testing.T) {
 	assert.Len(t, actionTokenAssignment.FindAllString(runner.commands[1], -1), 1,
 		"exactly one ITERVOX_ACTION_TOKEN assignment expected in the resumed command")
 }
+
+// expiryRecordingRunner records the live grant's expiry at the start of every
+// turn and pauses briefly so the next turn's extension lands measurably later.
+type expiryRecordingRunner struct {
+	store *agentactions.Store
+
+	mu       sync.Mutex
+	expiries []time.Time
+}
+
+func (r *expiryRecordingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
+	grant, _, ok := r.store.Validate(effectiveActionToken(command), "ENG-1", config.AgentActionComment, time.Now())
+	if !ok {
+		grant.ExpiresAt = time.Time{}
+	}
+	r.mu.Lock()
+	r.expiries = append(r.expiries, grant.ExpiresAt)
+	r.mu.Unlock()
+	time.Sleep(20 * time.Millisecond)
+	return agent.TurnResult{ResultText: "working", InputTokens: 10, OutputTokens: 10}, nil
+}
+
+// The grant is issued with a one-turn TTL; a run that spans several turns (the
+// tester polls a regression across turns) must not lose it mid-run, or every
+// later `itervox action` fails with unknown_token.
+func TestMultiTurnRunExtendsActionTokenEachTurn(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.MaxTurns = 2
+	cfg.Agent.DefaultAllowedActions = []string{config.AgentActionComment}
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "T", State: "In Progress"}
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+
+	store := agentactions.NewStore()
+	runner := &expiryRecordingRunner{store: store}
+	o := New(cfg, mt, runner, nil)
+	o.events = make(chan OrchestratorEvent, 64)
+	o.SetAgentActionTokens(store)
+	o.SetAgentActionBaseURL("http://127.0.0.1:1")
+
+	o.workersWg.Add(issue.Identifier)
+	o.runWorker(t.Context(), issue, 0, "", "claude", "claude", "", true, nil, nil, nil)
+	drainWorkerExit(t, o)
+
+	require.Len(t, runner.expiries, 2, "both turns must run")
+	require.False(t, runner.expiries[0].IsZero(), "turn 1 token must be live")
+	require.False(t, runner.expiries[1].IsZero(), "turn 2 token must be live")
+	assert.True(t, runner.expiries[1].After(runner.expiries[0]),
+		"turn 2 must extend the grant past turn 1's expiry (%s vs %s)", runner.expiries[1], runner.expiries[0])
+}

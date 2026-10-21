@@ -493,7 +493,7 @@ changes nothing.
 | `auto_clear` | bool | `false` | Delete the workspace directory **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are preserved. Runtime-editable. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes. **Breaking change in v0.2.0**: previous semantics cleared after every successful run |
 | `worktree` | bool | `false` | Enable git-worktree mode: per-issue worktrees inside `root` instead of plain directories. Requires a git repo at `root` |
 | `clone_url` | string | `""` | Remote URL used to initialise the bare clone when `worktree: true` and `root` is empty |
-| `base_branch` | string | `"main"` | Branch worktrees are created from |
+| `base_branch` | string | `"main"` | Branch worktrees are created from. A whole-value `$VAR` reference (e.g. `$RELEASE_BRANCH`) is resolved from the daemon environment, including `.itervox/.env`; an unset variable fails config load |
 
 ### Agent handoff (`.itervox/handoff/`)
 
@@ -524,6 +524,20 @@ Lifecycle scripts run via `bash -lc` inside each workspace. `after_create` and
 `before_run` are fatal on non-zero exit; `after_run` and `before_remove`
 failures are logged and ignored by default.
 
+`before_run` reserves two exit codes, so a hook can stop a run without
+spending agent tokens:
+
+- **Exit 3 — ask.** The hook writes its question to the file named by
+  `$ITERVOX_HOOK_QUESTION_FILE` (the hook output is used when the file is
+  empty). The issue is queued as input-required with no agent session and the
+  question is posted to the tracker. The reply triggers a fresh dispatch,
+  which re-runs `before_run`; the reply is appended to the rendered prompt.
+- **Exit 4 — defer.** The hook's precondition is not met yet (e.g. a merge
+  request is not merged). The last non-empty output line is the reason. No
+  agent runs and no retry is consumed; the issue is re-checked after
+  `agent.max_retry_backoff_ms` and the dashboard retry queue shows
+  `deferred: <reason>`.
+
 To make `after_run` a per-unit completion gate, set
 `hooks.after_run_required: true`: a worker whose final `after_run` hook exits
 non-zero fails the unit instead of completing it, so "done" requires the
@@ -533,7 +547,7 @@ operator's gate (e.g. `make test`) to pass — not just the agent's clean exit.
 |---|---|---|---|
 | `timeout_ms` | int | `60000` | Per-hook execution timeout (ms) |
 | `after_create` | string | `""` | Shell script run once, right after the workspace directory is created |
-| `before_run` | string | `""` | Shell script run before every agent turn |
+| `before_run` | string | `""` | Shell script run once per worker invocation, before the first agent turn. Exit 3 asks, exit 4 defers (above) |
 | `after_run` | string | `""` | Shell script run after every agent turn |
 | `after_run_required` | bool | `false` | When `true`, a failing final `after_run` hook blocks the unit from completing (per-unit gate) |
 | `before_remove` | string | `""` | Shell script run before the workspace is removed (auto-clear) |

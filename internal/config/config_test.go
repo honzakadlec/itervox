@@ -871,6 +871,23 @@ func TestWorkspaceCloneURL(t *testing.T) {
 	assert.Equal(t, "develop", cfg.Workspace.BaseBranch)
 }
 
+func TestWorkspaceBaseBranchResolvesEnvVar(t *testing.T) {
+	t.Setenv("ITERVOX_TEST_BASE_BRANCH", "RCMagento5_1_0")
+	content := minimal("workspace:\n  worktree: true\n  base_branch: $ITERVOX_TEST_BASE_BRANCH\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "RCMagento5_1_0", cfg.Workspace.BaseBranch)
+}
+
+func TestWorkspaceBaseBranchUnsetEnvVarFails(t *testing.T) {
+	content := minimal("workspace:\n  worktree: true\n  base_branch: $ITERVOX_TEST_BASE_BRANCH_UNSET\n")
+	path := workflowWithContent(t, content)
+	_, err := config.Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ITERVOX_TEST_BASE_BRANCH_UNSET")
+}
+
 func TestWorkspaceCloneURLDefault(t *testing.T) {
 	content := "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\nworkspace:\n  root: /tmp/ws\n  worktree: true\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)

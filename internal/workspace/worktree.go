@@ -82,6 +82,10 @@ func (m *Manager) resolveGitDir(ctx context.Context, root, branchName string) (s
 		}
 		if err := FetchBare(ctx, barePath); err != nil {
 			slog.Warn("worktree: bare fetch failed (best-effort)", "error", err)
+			// One refused ref aborts the whole origin fetch, base included.
+			if err := fetchBareBranch(ctx, barePath, m.baseBranch()); err != nil {
+				slog.Warn("worktree: base branch fetch failed (best-effort)", "error", err)
+			}
 		}
 		return barePath, nil
 	}
@@ -110,6 +114,7 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName, re
 		if err := AssertContained(root, wtPath); err != nil {
 			return Workspace{}, err
 		}
+		m.refreshReusedWorktree(ctx, root, identifier, wtPath)
 		return Workspace{Path: wtPath, Identifier: identifier, CreatedNow: false}, nil
 	}
 
@@ -128,10 +133,7 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName, re
 	// are created from the latest fetched state of that branch.
 	startPoint := ""
 	if m.cfg.Workspace.CloneURL != "" {
-		startPoint = m.cfg.Workspace.BaseBranch
-		if startPoint == "" {
-			startPoint = "main"
-		}
+		startPoint = m.baseBranch()
 	}
 	// A stacked start point wins when it resolves. Verified rather than
 	// trusted: the blocker's branch may not exist here (not yet dispatched,
@@ -249,4 +251,49 @@ func (m *Manager) refExists(ctx context.Context, gitDir, ref string) bool {
 	}
 	cmd := gitexec.Command(ctx, gitDir, "-C", gitDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	return cmd.Run() == nil
+}
+
+// baseBranch is the branch bare-clone worktrees start from.
+func (m *Manager) baseBranch() string {
+	if m.cfg.Workspace.BaseBranch != "" {
+		return m.cfg.Workspace.BaseBranch
+	}
+	return "main"
+}
+
+// refreshReusedWorktree fast-forwards a reused bare-clone worktree to the
+// current base when its branch has no commits of its own. Without it a retry
+// or requeue runs on the base as it was at first dispatch, so a fix merged
+// into the base meanwhile never reaches the issue.
+//
+// A branch with its own commits is left alone: it may back a pushed PR, and
+// moving it would diverge from that. `merge --ff-only` refuses to overwrite
+// uncommitted changes, so hook output in the tree is kept. Best-effort: any
+// failure is logged and the worktree is reused as it is.
+func (m *Manager) refreshReusedWorktree(ctx context.Context, root, identifier, wtPath string) {
+	if m.cfg.Workspace.CloneURL == "" {
+		return
+	}
+	base := m.baseBranch()
+	if err := fetchBareBranch(ctx, BarePath(root), base); err != nil {
+		slog.Warn("worktree: base branch fetch failed (best-effort)",
+			"identifier", identifier, "error", err)
+	}
+	baseRef := "refs/heads/" + base
+	behind, err := isAncestor(ctx, wtPath, "HEAD", baseRef)
+	if err != nil || !behind {
+		return
+	}
+	upToDate, err := isAncestor(ctx, wtPath, baseRef, "HEAD")
+	if err != nil || upToDate {
+		return
+	}
+	cmd := gitexec.Command(ctx, wtPath, "merge", "--ff-only", baseRef)
+	cmd.Env = append(cmd.Env, "LANG=C", "LC_ALL=C")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		slog.Warn("worktree: fast-forward of reused worktree failed, reusing as is",
+			"identifier", identifier, "base", base, "error", err, "output", strings.TrimSpace(string(out)))
+		return
+	}
+	slog.Info("worktree: fast-forwarded reused worktree to base", "identifier", identifier, "base", base)
 }
