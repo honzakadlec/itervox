@@ -291,6 +291,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// honours the last assignment), failing every action with unknown_token.
 	resumeAgentCommand := agentCommand
 	actionContext := ""
+	// actionToken is re-extended at the start of every turn: the grant's TTL
+	// covers one turn, but a run may span up to max_turns turns.
+	actionToken := ""
 	if len(profileAllowedActions) > 0 {
 		if workerHost != "" {
 			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, profileMoveIssueState, true)
@@ -323,6 +326,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				"PATH":                       pathValue,
 			})
 			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, profileMoveIssueState, false)
+			actionToken = token
 			defer func() {
 				o.agentActionTokens.Revoke(token)
 				_ = os.RemoveAll(shimDir)
@@ -335,8 +339,37 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// hooks like "git reset --hard origin/main" set up a clean workspace for the
 	// attempt without wiping Claude's work between turns.
 	if wsPath != "" && !skipFreshDispatchSetup {
-		hookLog := o.hookLogFn(issue.Identifier, runLogID)
-		if err := workspace.RunHookWithEnv(ctx, beforeRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName), hookLog); err != nil {
+		question, err := o.runBeforeRunHook(ctx, beforeRunHook, wsPath, hookTimeoutMs, issue.Identifier, runLogID, profileName)
+		switch workspace.HookExitCode(err) {
+		case workspace.HookExitInputRequired:
+			// The hook asked: no agent session exists, so the reply
+			// triggers a fresh dispatch that re-runs this hook.
+			attemptCopy := attempt
+			o.queueInputRequiredEntry(ctx, issue, attempt, runLogID, nil, backend, resumeAgentCommand,
+				workerHost, profileName, activeBranchName, question, "before_run hook",
+				&RunEntry{
+					Issue:          issue,
+					SessionID:      runLogID,
+					WorkerHost:     workerHost,
+					Backend:        backend,
+					TerminalReason: TerminalInputRequired,
+					RetryAttempt:   &attemptCopy,
+					StartedAt:      time.Now(),
+				},
+				inputRequiredKind, inputRequiredAutomationID, inputRequiredTriggerType,
+				inputRequiredAutomation, inputRequiredMoveStateGranted)
+			return
+		case workspace.HookExitDefer:
+			reason := hookDeferReason(err)
+			slog.Info("worker: before_run hook deferred the run",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "reason", reason)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", "worker: before_run hook deferred the run: "+reason, runLogID))
+			}
+			o.sendExit(ctx, issue, attempt, TerminalDeferred, errors.New(reason))
+			return
+		}
+		if err != nil {
 			slog.Warn("worker: before_run hook failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 			if o.logBuf != nil {
@@ -410,6 +443,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	var lastAfterRunErr error
 	turn := 1
 	for ; turn <= effectiveMaxTurns; turn++ {
+		if actionToken != "" && turn > 1 {
+			if !o.agentActionTokens.Extend(actionToken, agentActionTokenTTL(turnTimeoutMs), time.Now()) {
+				slog.Warn("worker: action token expired before turn; agent actions will fail",
+					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
+			}
+		}
 		// Enrich issue with comments before rendering the first-turn prompt.
 		if turn == 1 {
 			if detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID); err != nil {
@@ -1387,7 +1426,7 @@ func (o *Orchestrator) queueInputRequiredEntry(
 		slog.Info("worker: agent requires input — queuing for user input",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
 	} else {
-		slog.Info("worker: fallback detector queued issue for user input",
+		slog.Info("worker: issue queued for user input",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 			"reason", reason)
 	}

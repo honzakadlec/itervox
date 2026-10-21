@@ -20,8 +20,9 @@ Schema 2 replaces the inline prompt with two file references per profile:
 - `soul_file` — typically `.itervox/agents/<name>/SOUL.md`: the compact identity ("who you are").
 - `instructions_file` — typically `.itervox/agents/<name>/INSTRUCTIONS.md`: the operational and behavioural rules.
 
-At dispatch time the daemon assembles the prompt as **SOUL.md → INSTRUCTIONS.md →
-per-issue Liquid template** and passes it to the agent subprocess.
+At dispatch time the daemon assembles the prompt as **per-issue Liquid template →
+SOUL.md → INSTRUCTIONS.md** (with daemon blocks such as prior handoffs between the
+template and SOUL.md) and passes it to the agent subprocess.
 
 ## The mandatory schema marker
 

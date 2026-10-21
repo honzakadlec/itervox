@@ -116,7 +116,12 @@ func worktreeIsDirty(ctx context.Context, wtPath string) (bool, error) {
 
 // branchContains reports whether HEAD already contains ref's tip.
 func branchContains(ctx context.Context, wtPath, ref string) (bool, error) {
-	cmd := gitexec.Command(ctx, wtPath, "merge-base", "--is-ancestor", ref, "HEAD")
+	return isAncestor(ctx, wtPath, ref, "HEAD")
+}
+
+// isAncestor reports whether ancestor is reachable from descendant.
+func isAncestor(ctx context.Context, wtPath, ancestor, descendant string) (bool, error) {
+	cmd := gitexec.Command(ctx, wtPath, "merge-base", "--is-ancestor", ancestor, descendant)
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
@@ -125,7 +130,7 @@ func branchContains(ctx context.Context, wtPath, ref string) (bool, error) {
 	if ok := asExitError(err, &exitErr); ok && exitErr.ExitCode() == 1 {
 		return false, nil // valid answer: not an ancestor
 	}
-	return false, fmt.Errorf("workspace: merge-base --is-ancestor %s in %s: %w", ref, wtPath, err)
+	return false, fmt.Errorf("workspace: merge-base --is-ancestor %s %s in %s: %w", ancestor, descendant, wtPath, err)
 }
 
 func asExitError(err error, target **exec.ExitError) bool {

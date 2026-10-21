@@ -137,6 +137,11 @@ const (
 	// through to the normal failed path when no fallback is eligible
 	// (CORE-051).
 	TerminalRateLimited TerminalReason = "rate_limited"
+	// TerminalDeferred is used when the before_run hook exits
+	// workspace.HookExitDefer: its precondition is not met yet, so no agent
+	// ran. The event loop re-checks after agent.max_retry_backoff_ms without
+	// consuming a retry; the retry row's error carries "deferred: <reason>".
+	TerminalDeferred TerminalReason = "deferred"
 )
 
 // Pause reasons recorded in State.PauseReasons (issue #42-F).

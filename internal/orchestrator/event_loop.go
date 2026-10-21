@@ -2347,6 +2347,28 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "input_required")
 
+		case TerminalDeferred:
+			// The before_run hook's precondition is not met yet: no agent
+			// ran, so no retry is consumed. Re-check at the backoff cap; the
+			// retry row's error is the dashboard's "deferred: <reason>".
+			if liveEntry != nil && liveEntry.PendingInputResume {
+				delete(state.PendingInputResumes, issue.Identifier)
+			}
+			reason := "before_run hook deferred the run"
+			if ev.Error != nil {
+				reason = ev.Error.Error()
+			}
+			var automationForRetry *AutomationDispatch
+			if liveEntry != nil {
+				automationForRetry = liveEntry.Automation
+			}
+			// MaxRetryBackoffMs is read-only after startup (not in cfgMu).
+			delayMs := o.cfg.Agent.MaxRetryBackoffMs
+			state = ScheduleRetry(state, ev.IssueID, attempt, issue.Identifier, "deferred: "+reason, now, delayMs, automationForRetry)
+			slog.Info("orchestrator: run deferred by before_run hook, re-check scheduled",
+				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
+				"attempt", attempt, "delay_ms", delayMs, "reason", reason)
+
 		case TerminalRateLimited:
 			// CORE-051: a quota limit is classified on the first failure. The
 			// rate_limited fallback is evaluated now, without consuming a retry;

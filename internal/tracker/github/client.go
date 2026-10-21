@@ -474,11 +474,40 @@ func (c *Client) fetchPaginated(ctx context.Context, startURL string, extraState
 }
 
 // UpdateIssueState manages labels to simulate workflow state transitions.
-// It removes any existing active/terminal state labels and adds the target label.
+// It adds the target label, then removes any other active/terminal/backlog
+// state labels.
 func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string) error {
 	u := fmt.Sprintf("%s/repos/%s/%s/issues/%s/labels", c.cfg.Endpoint, c.owner, c.repo, issueID)
 
-	// Remove existing state labels (active + terminal + backlog).
+	// Add the target state label FIRST. Removing the old labels first left
+	// the issue with no state label for the whole DELETE loop; a reconcile
+	// fetch in that window derived state "" and stopped the worker, whose
+	// cancelled ctx then aborted this add and stranded the issue unlabelled.
+	// Adding first means the issue always carries a state label, and a failed
+	// add leaves the previous state untouched.
+	payload, err := json.Marshal(map[string][]string{"labels": {stateName}})
+	if err != nil {
+		return fmt.Errorf("github_update_state: marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("github_update_state: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
+	if err != nil {
+		return fmt.Errorf("github_update_state: %w", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("github_update_state: status %d", resp.StatusCode)
+	}
+
+	// Remove the other state labels (active + terminal + backlog).
 	// Use a fresh slice to avoid mutating cfg's backing arrays.
 	allStateLabels := make([]string, 0, len(c.activeStates())+len(c.terminalStates())+len(c.cfg.BacklogStates))
 	allStateLabels = append(allStateLabels, c.activeStates()...)
@@ -511,27 +540,6 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 		_ = resp.Body.Close()
 	}
 
-	// Add the target state label.
-	payload, err := json.Marshal(map[string][]string{"labels": {stateName}})
-	if err != nil {
-		return fmt.Errorf("github_update_state: marshal: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("github_update_state: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
-	if err != nil {
-		return fmt.Errorf("github_update_state: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("github_update_state: status %d", resp.StatusCode)
-	}
 	return nil
 }
 
