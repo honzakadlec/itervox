@@ -538,6 +538,21 @@ operator's gate (e.g. `make test`) to pass — not just the agent's clean exit.
 | `after_run_required` | bool | `false` | When `true`, a failing final `after_run` hook blocks the unit from completing (per-unit gate) |
 | `before_remove` | string | `""` | Shell script run before the workspace is removed (auto-clear) |
 
+Every hook receives `ITERVOX_ISSUE_IDENTIFIER`, `ITERVOX_RUN_ID` and
+`ITERVOX_PROFILE`. `after_run` also receives `ITERVOX_TURN_OUTCOME`, how the
+turn that just ended will be treated:
+
+| Value | Meaning |
+|---|---|
+| `failed` | The turn failed, the runner errored, or a quota limit was hit; also set when the prompt fails to render. The run exits as failed or rate limited. |
+| `input_required` | The agent asked a human for input (vendor signal, or the input-required sentinel in a successful turn). The run is queued for a reply. |
+| `last_turn` | The turn succeeded and was the last the run will take: `agent.max_turns` reached, or the session concluded with no output. |
+| `ok` | The turn succeeded and the run may take another turn. |
+
+The value mirrors the worker's own branches after the hook. A run can still end
+after an `ok` turn when the issue leaves its active states, so hooks that must
+detect that case check the tracker state themselves.
+
 ```yaml
 hooks:
   timeout_ms: 60000

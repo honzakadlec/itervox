@@ -64,7 +64,7 @@ func TestIssueProfileForDispatch_DisabledLabelProfileFallsBack(t *testing.T) {
 }
 
 func TestHookRunEnv_IncludesProfile(t *testing.T) {
-	env := hookRunEnv("ENG-1", "run-1", "tester")
+	env := hookRunEnv("ENG-1", "run-1", "tester", "")
 	assert.Equal(t, map[string]string{
 		"ITERVOX_ISSUE_IDENTIFIER": "ENG-1",
 		"ITERVOX_RUN_ID":           "run-1",

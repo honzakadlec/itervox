@@ -217,7 +217,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 		if ws.CreatedNow && !skipFreshDispatchSetup {
 			hookLog := o.hookLogFn(issue.Identifier, runLogID)
-			if err := workspace.RunHookWithEnv(ctx, o.cfg.Hooks.AfterCreate, wsPath, o.cfg.Hooks.TimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName), hookLog); err != nil {
+			if err := workspace.RunHookWithEnv(ctx, o.cfg.Hooks.AfterCreate, wsPath, o.cfg.Hooks.TimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName, ""), hookLog); err != nil {
 				slog.Warn("worker: after_create hook failed, removing workspace so next retry re-runs it",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 				if o.logBuf != nil {
@@ -336,7 +336,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// attempt without wiping Claude's work between turns.
 	if wsPath != "" && !skipFreshDispatchSetup {
 		hookLog := o.hookLogFn(issue.Identifier, runLogID)
-		if err := workspace.RunHookWithEnv(ctx, beforeRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName), hookLog); err != nil {
+		if err := workspace.RunHookWithEnv(ctx, beforeRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName, ""), hookLog); err != nil {
 			slog.Warn("worker: before_run hook failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 			if o.logBuf != nil {
@@ -455,7 +455,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			// a loop — defer would not fire until runWorker returns (GO-R10-2).
 			if wsPath != "" {
 				hookCtx, hookCancel := context.WithTimeout(context.Background(), hookFallbackTimeout)
-				if hookErr := workspace.RunHookWithEnv(hookCtx, afterRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName), o.hookLogFn(issue.Identifier, runLogID)); hookErr != nil {
+				if hookErr := workspace.RunHookWithEnv(hookCtx, afterRunHook, wsPath, hookTimeoutMs, hookRunEnv(issue.Identifier, runLogID, profileName, turnOutcomeFailed), o.hookLogFn(issue.Identifier, runLogID)); hookErr != nil {
 					slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issue.ID, "error", hookErr)
 				}
 				hookCancel()
@@ -651,7 +651,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 		// after_run hook. Best-effort by default; the final turn's result
 		// becomes the per-unit gate when hooks.after_run_required is set.
-		lastAfterRunErr = o.runAfterHook(ctx, afterRunHook, hookTimeoutMs, wsPath, issue.ID, issue.Identifier, runLogID, profileName)
+		lastAfterRunErr = o.runAfterHook(ctx, afterRunHook, hookTimeoutMs, wsPath, issue.ID, issue.Identifier, runLogID, profileName,
+			turnOutcome(result, runErr, turn, effectiveMaxTurns))
 
 		// Track the current git branch after each turn so retried workers can
 		// resume from the same branch. Only fires when the agent has switched to
@@ -1449,11 +1450,11 @@ func buildInputRequiredExitRunEntry(
 // runAfterHook executes the after_run hook and returns its error. Callers on
 // the best-effort path log and ignore the result; when hooks.after_run_required
 // is set, the success path uses the final turn's result as a per-unit gate.
-func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs int, wsPath, issueID, identifier, sessionID, profileName string) error {
+func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs int, wsPath, issueID, identifier, sessionID, profileName, outcome string) error {
 	if wsPath == "" {
 		return nil
 	}
-	if err := workspace.RunHookWithEnv(ctx, hook, wsPath, timeoutMs, hookRunEnv(identifier, sessionID, profileName), o.hookLogFn(identifier, sessionID)); err != nil {
+	if err := workspace.RunHookWithEnv(ctx, hook, wsPath, timeoutMs, hookRunEnv(identifier, sessionID, profileName, outcome), o.hookLogFn(identifier, sessionID)); err != nil {
 		slog.Warn("worker: after_run hook failed", "issue_id", issueID, "error", err)
 		return err
 	}
@@ -1491,12 +1492,50 @@ func (o *Orchestrator) issueMovedOutOfActiveStates(ctx context.Context, issue do
 // (same names the agent subprocess receives via the action bridge).
 // ITERVOX_PROFILE is the run's resolved profile (empty = bare agent.command),
 // so hooks can skip setup only some profiles need.
-func hookRunEnv(identifier, runID, profileName string) map[string]string {
-	return map[string]string{
+func hookRunEnv(identifier, runID, profileName, outcome string) map[string]string {
+	env := map[string]string{
 		"ITERVOX_ISSUE_IDENTIFIER": identifier,
 		"ITERVOX_RUN_ID":           runID,
 		"ITERVOX_PROFILE":          profileName,
 	}
+	if outcome != "" {
+		env["ITERVOX_TURN_OUTCOME"] = outcome
+	}
+	return env
+}
+
+// Values of ITERVOX_TURN_OUTCOME, exported to after_run only.
+const (
+	turnOutcomeInputRequired = "input_required"
+	turnOutcomeFailed        = "failed"
+	turnOutcomeLastTurn      = "last_turn"
+	turnOutcomeOK            = "ok"
+)
+
+// turnOutcome tells after_run how the turn just ended. It follows the branch
+// order the worker loop applies right after the hook, so the two must change
+// together. Ends the loop can only learn later (issue left active states,
+// duplicate result text, the codex single-turn exit) are not visible here.
+func turnOutcome(result agent.TurnResult, runErr error, turn, maxTurns int) string {
+	failed := result.Failed || runErr != nil
+	switch {
+	case failed && result.LastLimit.Terminal() && !errors.Is(runErr, context.Canceled):
+		return turnOutcomeFailed
+	case result.InputRequired && runErr == nil:
+		return turnOutcomeInputRequired
+	case failed:
+		if runErr == nil && result.FailureText == "" && result.InputTokens == 0 && result.OutputTokens == 0 {
+			return turnOutcomeLastTurn
+		}
+		return turnOutcomeFailed
+	case result.InputTokens == 0 && result.OutputTokens == 0:
+		return turnOutcomeLastTurn
+	case agent.IsSentinelInputRequired(buildSuccessfulTurnInputCheckText(result)):
+		return turnOutcomeInputRequired
+	case turn >= maxTurns:
+		return turnOutcomeLastTurn
+	}
+	return turnOutcomeOK
 }
 
 func prepareAgentActionRuntime(tokens interface {
