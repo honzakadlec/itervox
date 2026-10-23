@@ -20,6 +20,15 @@ func (r *blockedRunner) RunTurn(ctx context.Context, log agent.Logger, onProgres
 	return agent.TurnResult{Failed: true}, ctx.Err()
 }
 
+// cancelOnCleanup returns a context that is cancelled when the test ends, so
+// workers parked on blockedRunner exit instead of leaking past goleak.
+func cancelOnCleanup(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func testConfig() *config.Config {
 	return &config.Config{
 		Tracker: config.TrackerConfig{
@@ -243,7 +252,7 @@ func TestPendingInputResumeSurvivesCompletionState(t *testing.T) {
 		QueuedAt:    time.Now(),
 	}
 
-	state = orch.processPendingInputResumes(context.Background(), state, time.Now())
+	state = orch.processPendingInputResumes(cancelOnCleanup(t), state, time.Now())
 
 	_, running := state.Running["id1"]
 	assert.True(t, running, "issue sitting in completion_state should still resume, not be dropped as stale")
@@ -283,7 +292,7 @@ func TestPendingInputResumeSurvivesAutomationTargetState(t *testing.T) {
 		QueuedAt:    time.Now(),
 	}
 
-	state = orch.processPendingInputResumes(context.Background(), state, time.Now())
+	state = orch.processPendingInputResumes(cancelOnCleanup(t), state, time.Now())
 
 	_, running := state.Running["id1"]
 	assert.True(t, running, "issue sitting in an automation trigger.state should still resume, not be dropped as stale")
@@ -336,7 +345,7 @@ func TestResumedAutomationRunSurvivesReconcileAfterInputRequired(t *testing.T) {
 		TriggerType:  string(config.AutomationTriggerIssueEnteredState),
 	}
 
-	state = orch.processPendingInputResumes(context.Background(), state, time.Now())
+	state = orch.processPendingInputResumes(cancelOnCleanup(t), state, time.Now())
 
 	running, ok := state.Running["id1"]
 	require.True(t, ok, "resumed run should be dispatched")
@@ -408,7 +417,7 @@ func TestResumedAutomationRunCarriesFullAutomationDispatch(t *testing.T) {
 		RequiresMoveState: true,
 	}
 
-	state = orch.processPendingInputResumes(context.Background(), state, time.Now())
+	state = orch.processPendingInputResumes(cancelOnCleanup(t), state, time.Now())
 
 	running, ok := state.Running["id1"]
 	require.True(t, ok, "resumed run should be dispatched")
