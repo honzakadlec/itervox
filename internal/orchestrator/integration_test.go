@@ -1451,9 +1451,9 @@ func TestWorkerHooksReceiveIssueIdentifierAndRunID(t *testing.T) {
 	capture := func(name string) string {
 		return `printf '%s|%s\n' "$ITERVOX_ISSUE_IDENTIFIER" "$ITERVOX_RUN_ID" >> ` + filepath.Join(outDir, name)
 	}
+	cfg.Hooks.AfterRun = capture("after_run") + `; printf '%s\n' "${ITERVOX_TURN_OUTCOME-unset}" >> ` + filepath.Join(outDir, "outcome")
+	cfg.Hooks.BeforeRun = capture("before_run") + `; printf '%s\n' "${ITERVOX_TURN_OUTCOME-unset}" >> ` + filepath.Join(outDir, "before_outcome")
 	cfg.Hooks.AfterCreate = capture("after_create")
-	cfg.Hooks.BeforeRun = capture("before_run")
-	cfg.Hooks.AfterRun = capture("after_run")
 
 	mt := tracker.NewMemoryTracker(
 		[]domain.Issue{makeIssue("id1", "ENG-1", "In Progress", nil, nil)},
@@ -1487,4 +1487,6 @@ func TestWorkerHooksReceiveIssueIdentifierAndRunID(t *testing.T) {
 	assert.NotEmpty(t, runID, "before_run must receive ITERVOX_RUN_ID")
 	assert.Equal(t, beforeRun, afterCreate, "after_create must see the same identifier and run ID")
 	assert.Equal(t, beforeRun, afterRun, "after_run must see the same identifier and run ID")
+	assert.Equal(t, "last_turn", read("outcome"), "a clean turn at max_turns is last_turn")
+	assert.Equal(t, "unset", read("before_outcome"), "ITERVOX_TURN_OUTCOME is after_run only")
 }
