@@ -106,6 +106,40 @@ func TestTrackerReplyWaitsForUndeliveredQuestion(t *testing.T) {
 	assert.NotContains(t, state.PendingInputResumes, "ENG-1")
 }
 
+// TestTrackerReplyIgnoresPreviousRoundUntilKeyedQuestionLands replays the
+// GitLab #80 sequence: a new pause while the previous round's question and
+// its human reply are still on the issue. A keyed entry must wait for its own
+// question, then resume with the reply posted under it.
+func TestTrackerReplyIgnoresPreviousRoundUntilKeyedQuestionLands(t *testing.T) {
+	ctx := context.Background()
+	orch, ob, state, issue := inputRequiredHarness(t)
+	mt := orch.tracker.(*tracker.MemoryTracker)
+	_, err := mt.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(itervoxCommentPrefix+"\n\nprevious round"))
+	require.NoError(t, err)
+	mt.AddHumanCommentAt(issue.ID, "answer to the previous round", time.Now().Add(-40*time.Minute))
+
+	state.Running[issue.ID] = &RunEntry{Issue: issue, StartedAt: time.Now()}
+	state = orch.handleEvent(ctx, state, exitNeedingInput(issue))
+	require.NotEmpty(t, state.InputRequiredIssues["ENG-1"].QuestionCommentKey)
+
+	state = orch.checkTrackerReplies(ctx, state)
+	require.Contains(t, state.InputRequiredIssues, "ENG-1")
+	require.NotContains(t, state.PendingInputResumes, "ENG-1",
+		"the new question has not landed; the previous round's reply must not resume the agent")
+
+	queued := ob.Snapshot()
+	require.Len(t, queued, 1)
+	_, err = mt.CreateCommentWithKey(ctx, issue.ID, queued[0].CommentKey, queued[0].Body)
+	require.NoError(t, err)
+	mt.AddHumanCommentAt(issue.ID, "answer to this round", time.Now().Add(time.Second))
+
+	state = orch.checkTrackerReplies(ctx, state)
+	assert.NotContains(t, state.InputRequiredIssues, "ENG-1")
+	resume := state.PendingInputResumes["ENG-1"]
+	require.NotNil(t, resume)
+	assert.Equal(t, "answer to this round", resume.UserMessage)
+}
+
 // keylessTracker hides MemoryTracker's IdempotentCommenter methods: embedding
 // the INTERFACE (not the concrete type) promotes only tracker.Tracker's methods.
 type keylessTracker struct{ tracker.Tracker }

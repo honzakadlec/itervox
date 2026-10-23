@@ -126,6 +126,86 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 	return comment, nil
 }
 
+// gitlabKeyScanPerPage is the page size FindCommentByKey requests (the notes
+// endpoint's maximum).
+const gitlabKeyScanPerPage = 100
+
+// gitlabKeyScanPages bounds how many newest-first pages FindCommentByKey
+// reads. A keyed comment is, by construction, among the newest on the issue,
+// so a few pages cover any realistic retry delay without walking a
+// pathological thread end to end.
+const gitlabKeyScanPages = 3
+
+// CreateCommentWithKey implements tracker.IdempotentCommenter. GitLab has no
+// client-supplied note id, so the key travels as a hidden HTML marker in the
+// body — GitLab's markdown renders HTML comments invisibly (the same property
+// the branch marker relies on), and the notes API returns the raw body, so
+// FindCommentByKey can read it back.
+func (c *Client) CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error) {
+	return c.CreateComment(ctx, issueID, tracker.MarkCommentKey(body, key))
+}
+
+// FindCommentByKey implements tracker.IdempotentCommenter by scanning the
+// issue's notes newest-first (sort=desc&order_by=created_at) for key's hidden
+// marker, up to gitlabKeyScanPages pages. Stops as soon as a match is found.
+//
+// Residual: a duplicate remains possible only if more than roughly
+// gitlabKeyScanPages*gitlabKeyScanPerPage other notes land on the issue
+// between the failed attempt and its retry, pushing the target note past the
+// pages this scans.
+//
+// Returns a non-nil error whenever the answer is unknown — transport
+// failure, non-200 (including 404), or an undecodable body. The caller
+// treats an error as "do not post", so collapsing an unknown result to
+// "absent" here would reintroduce the duplicate this path exists to prevent.
+func (c *Client) FindCommentByKey(ctx context.Context, issueID, key string) (*domain.Comment, bool, error) {
+	notesURL := c.projectURL(fmt.Sprintf("/issues/%s/notes?order_by=created_at&sort=desc&per_page=%d", url.PathEscape(issueID), gitlabKeyScanPerPage))
+	for page := 0; page < gitlabKeyScanPages && notesURL != ""; page++ {
+		notesBody, linkHeader, err := c.get(ctx, notesURL)
+		if err != nil {
+			return nil, false, fmt.Errorf("gitlab_find_comment_by_key: %w", err)
+		}
+		rawNotes, ok := notesBody.([]any)
+		if !ok {
+			return nil, false, fmt.Errorf("gitlab_find_comment_by_key: unexpected notes shape %T", notesBody)
+		}
+		for _, item := range rawNotes {
+			note, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			noteBody, _ := note["body"].(string)
+			if !tracker.CommentHasKey(noteBody, key) {
+				continue
+			}
+			comment := &domain.Comment{Body: noteBody, CreatedAt: tracker.ParseTime(note["created_at"])}
+			if id, ok := tracker.ToIntVal(note["id"]); ok {
+				comment.ID = strconv.Itoa(id)
+			}
+			if author, ok := note["author"].(map[string]any); ok {
+				if id, ok := tracker.ToIntVal(author["id"]); ok {
+					comment.AuthorID = strconv.Itoa(id)
+				}
+				comment.AuthorName, _ = author["username"].(string)
+			}
+			return comment, true, nil
+		}
+		// ErrMissingPageLink means GitLab sent first/prev/last but no next:
+		// this was the oldest page, so the thread is exhausted.
+		next, err := ParseNextLink(linkHeader)
+		if err != nil {
+			break
+		}
+		notesURL = next
+	}
+	return nil, false, nil
+}
+
+// var _ tracker.IdempotentCommenter = (*Client)(nil) pins CreateCommentWithKey
+// and FindCommentByKey to the interface signature so a drift here fails at
+// compile time instead of silently leaving GitLab question comments keyless.
+var _ tracker.IdempotentCommenter = (*Client)(nil)
+
 // CreateIssue creates a new issue in the configured GitLab project. The
 // sourceIssueID is accepted for tracker interface parity but not otherwise
 // used — GitLab adapter is single-project scoped, like GitHub's.
