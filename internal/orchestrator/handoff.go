@@ -275,6 +275,12 @@ func markHandoffPartial(workspacePath, handoffRelPath string) error {
 	return nil
 }
 
+// handoffMtimeSkew absorbs the lag between a file's mtime and time.Now().
+// The kernel stamps files from a coarse clock that trails the wall clock by
+// up to a scheduler tick (about 5ms measured on Linux 5.15), so a handoff
+// written right after StartedAt can carry an mtime just before it.
+const handoffMtimeSkew = 50 * time.Millisecond
+
 // markLatestHandoffPartial finds the most recent (by mtime) handoff file
 // authored by the named profile in `<workspacePath>/.itervox/handoff/`
 // and renames it to `<basename>.partial.md`. Used by the orchestrator
@@ -330,7 +336,7 @@ func markLatestHandoffPartial(workspacePath, profileName string, notBefore time.
 		mod := info.ModTime()
 		// Gate: ignore files older than the current worker started. They
 		// belong to predecessor runs whose handoffs should remain intact.
-		if !notBefore.IsZero() && mod.Before(notBefore) {
+		if !notBefore.IsZero() && mod.Before(notBefore.Add(-handoffMtimeSkew)) {
 			continue
 		}
 		if mod.After(latestMod) {

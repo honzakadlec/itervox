@@ -36,26 +36,29 @@ func init() {
 	switch os.Getenv(crashChildModeEnv) {
 	case "failfast":
 		setupFailFastChildLogging(dir)
-		done := make(chan struct{})
 		go func() {
-			defer close(done)
 			defer failFastOnPanic("failfast-fixture")
 			panic(failFastFixtureMsg)
 		}()
-		<-done
+		waitForCrash()
 	default:
 		if _, err := armCrashOutput(dir); err != nil {
 			_, _ = os.Stderr.WriteString("arm failed: " + err.Error() + "\n")
 			os.Exit(3)
 		}
-		done := make(chan struct{})
 		go func() {
-			defer close(done)
 			panic(crashFixturePanic)
 		}()
-		<-done
+		waitForCrash()
 	}
 	os.Exit(0) // unreachable when the panic crashes the process
+}
+
+// waitForCrash parks the child until the runtime kills it. Signalling from
+// the panicking goroutine's defer instead would wake main during unwinding,
+// and with GOMAXPROCS > 1 main's os.Exit(0) wins the race against the crash.
+func waitForCrash() {
+	time.Sleep(30 * time.Second)
 }
 
 func runCrashChild(t *testing.T, dir, mode string) (string, error) {

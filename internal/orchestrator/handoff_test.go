@@ -325,6 +325,34 @@ func TestMarkLatestHandoffPartialIgnoresAlreadyPartialFiles(t *testing.T) {
 	assert.Equal(t, "prior partial", string(body))
 }
 
+func TestMarkLatestHandoffPartialNotBeforeGate(t *testing.T) {
+	startedAt := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name        string
+		mtimeOffset time.Duration
+		wantPartial bool
+	}{
+		{"written after start", time.Second, true},
+		{"mtime lags start by filesystem clock skew", -5 * time.Millisecond, true},
+		{"predecessor file from an earlier run", -time.Minute, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := t.TempDir()
+			name := "2026-05-25T14-00-00Z_backend.md"
+			writeHandoff(t, ws, name, "body")
+			path := filepath.Join(ws, HandoffDirRelPath, name)
+			mtime := startedAt.Add(tc.mtimeOffset)
+			require.NoError(t, os.Chtimes(path, mtime, mtime))
+
+			require.NoError(t, markLatestHandoffPartial(ws, "backend", startedAt))
+
+			_, err := os.Stat(path)
+			assert.Equal(t, tc.wantPartial, os.IsNotExist(err))
+		})
+	}
+}
+
 func TestMarkLatestHandoffPartialEmptyWorkspace(t *testing.T) {
 	require.NoError(t, markLatestHandoffPartial("", "backend", time.Time{}))
 }
