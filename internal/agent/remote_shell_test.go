@@ -59,6 +59,7 @@ echo '%[2]s'
 // words were split, so `bash -lc cd` ran a bare cd and the agent ran in the
 // remote HOME (CORE-154's broader form).
 func TestSSHTurnStartsAgentInWorkspace(t *testing.T) {
+	requireSSHMatrix(t) // CORE-172: slow login-shell matrix
 	for _, shell := range availableLoginShells() {
 		for _, rc := range remoteRunnerCases() {
 			t.Run(shellLabel(shell)+"/"+rc.name, func(t *testing.T) {
