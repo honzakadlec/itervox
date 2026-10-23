@@ -680,6 +680,65 @@ func TestGHUpdateIssueStateRemovesBacklogLabel(t *testing.T) {
 	assert.NotContains(t, deleted, "todo", "should not delete the target label itself")
 }
 
+func TestGHUpdateIssueStateAddsTargetBeforeRemovingOthers(t *testing.T) {
+	// Regression: removing the old state label before adding the new one left
+	// the issue with no state label for the length of the DELETE loop. A
+	// reconcile fetch in that window derived state "" and stopped the worker,
+	// whose cancelled context then aborted the add — stranding the issue with
+	// no state label at all.
+	var mu sync.Mutex
+	var calls []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.Method)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer ts.Close()
+
+	client := ghclient.NewClient(ghclient.ClientConfig{
+		APIKey:         "tok",
+		ProjectSlug:    "owner/repo",
+		ActiveStates:   []string{"todo", "in-progress"},
+		TerminalStates: []string{"done", "cancelled"},
+		BacklogStates:  []string{"backlog"},
+		Endpoint:       ts.URL,
+	})
+	require.NoError(t, client.UpdateIssueState(context.Background(), "123", "in-progress"))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, calls)
+	assert.Equal(t, http.MethodPost, calls[0], "target label must be added before any state label is removed")
+	assert.Contains(t, calls[1:], http.MethodDelete, "other state labels must still be removed")
+}
+
+func TestGHUpdateIssueStateKeepsOldLabelsWhenAddFails(t *testing.T) {
+	// If the target label cannot be added, the issue must keep its current
+	// state label rather than end up with none.
+	var deletes atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deletes.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer ts.Close()
+
+	client := ghclient.NewClient(ghclient.ClientConfig{
+		APIKey:         "tok",
+		ProjectSlug:    "owner/repo",
+		ActiveStates:   []string{"todo", "in-progress"},
+		TerminalStates: []string{"done", "cancelled"},
+		Endpoint:       ts.URL,
+	})
+	require.Error(t, client.UpdateIssueState(context.Background(), "123", "in-progress"))
+	assert.Zero(t, deletes.Load(), "no state label may be removed when the add fails")
+}
+
 // splitPath splits a URL path on "/" and returns non-empty parts.
 func splitPath(p string) []string {
 	var parts []string

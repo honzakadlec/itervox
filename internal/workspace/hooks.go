@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,45 @@ import (
 
 const defaultHookTimeoutMs = 60000
 const maxHookOutputBytes = 256 * 1024
+
+// Reserved before_run exit codes. Any other non-zero exit is a hook failure.
+const (
+	// HookExitInputRequired: the hook needs a human answer before the agent
+	// can run. The question is the content of $ITERVOX_HOOK_QUESTION_FILE
+	// (falling back to the hook output).
+	HookExitInputRequired = 3
+	// HookExitDefer: the hook's precondition is not met yet (e.g. an MR is
+	// not merged). The reason is the hook output; the issue is re-checked
+	// later without running the agent or consuming a retry.
+	HookExitDefer = 4
+)
+
+// HookExitError is returned by RunHook when the script ran to completion and
+// exited non-zero. Output is the captured stdout/stderr (bounded).
+type HookExitError struct {
+	Code   int
+	Output string
+	err    error
+}
+
+func (e *HookExitError) Error() string {
+	if e.Output != "" {
+		return fmt.Sprintf("hook_failed: %v\n%s", e.err, e.Output)
+	}
+	return fmt.Sprintf("hook_failed: %v", e.err)
+}
+
+func (e *HookExitError) Unwrap() error { return e.err }
+
+// HookExitCode returns the exit code carried by a RunHook error, or -1 when
+// err is not a completed non-zero exit (nil, timeout, start failure).
+func HookExitCode(err error) int {
+	var hookErr *HookExitError
+	if errors.As(err, &hookErr) {
+		return hookErr.Code
+	}
+	return -1
+}
 
 // itervoxEnvAllowlist lists env vars the daemon explicitly threads into hook
 // subprocesses on top of the inherited environment. ITERVOX_BIN is critical
@@ -39,7 +79,8 @@ var itervoxEnvAllowlist = []string{
 // per-issue log buffer.
 //
 // Returns an error tagged "hook_timeout" on deadline exceeded, or
-// "hook_failed" on non-zero exit. The parent ctx is also respected.
+// "hook_failed" on non-zero exit (a *HookExitError when the script exited on
+// its own). The parent ctx is also respected.
 func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, logFn ...func(string)) error {
 	return RunHookWithEnv(ctx, script, workspacePath, timeoutMs, nil, logFn...)
 }
@@ -92,6 +133,10 @@ func RunHookWithEnv(ctx context.Context, script, workspacePath string, timeoutMs
 			return fmt.Errorf("hook_timeout: script exceeded %dms", timeoutMs)
 		}
 		output := strings.TrimSpace(out.String())
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) && ctx.Err() == nil && exitErr.ExitCode() > 0 {
+			return &HookExitError{Code: exitErr.ExitCode(), Output: output, err: runErr}
+		}
 		if output != "" {
 			return fmt.Errorf("hook_failed: %w\n%s", runErr, output)
 		}

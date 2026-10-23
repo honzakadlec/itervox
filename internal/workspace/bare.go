@@ -99,6 +99,19 @@ func FetchBare(ctx context.Context, barePath string) error {
 	return nil
 }
 
+// fetchBareBranch fetches only branch from origin into the bare clone. Unlike
+// FetchBare it touches no issue branch, so a pushed issue branch checked out in
+// a worktree cannot make git refuse it.
+func fetchBareBranch(ctx context.Context, barePath, branch string) error {
+	ref := "refs/heads/" + branch
+	cmd := gitexec.Command(ctx, ".", "-C", barePath, "fetch", "origin", "+"+ref+":"+ref)
+	cmd.Env = append(cmd.Env, "LANG=C", "LC_ALL=C")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("bare: fetch %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // bareRemoteMatches reports whether the bare clone at barePath has cloneURL as
 // its origin.
 //

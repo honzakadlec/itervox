@@ -174,3 +174,44 @@ func TestCleanupOnNilStoreIsSafe(t *testing.T) {
 	var s *Store
 	assert.Equal(t, 0, s.Cleanup(time.Now()))
 }
+
+// A multi-turn run outlives the one-turn TTL it was issued with; Extend at
+// each turn keeps the grant valid past the original expiry.
+func TestExtend_KeepsMultiTurnRunGrantLive(t *testing.T) {
+	s := NewStore()
+	token, err := s.Issue("ENG-1", "run-1", []string{"comment"}, "", time.Hour)
+	require.NoError(t, err)
+
+	now := time.Now()
+	require.True(t, s.Extend(token, time.Hour, now.Add(50*time.Minute)))
+
+	_, reason, ok := s.Validate(token, "ENG-1", "comment", now.Add(90*time.Minute))
+	require.True(t, ok, "grant must still be valid after the original TTL: %s", reason)
+}
+
+func TestExtend_NeverShortensExpiry(t *testing.T) {
+	s := NewStore()
+	token, err := s.Issue("ENG-1", "run-1", []string{"comment"}, "", 2*time.Hour)
+	require.NoError(t, err)
+
+	now := time.Now()
+	require.True(t, s.Extend(token, time.Minute, now))
+
+	_, _, ok := s.Validate(token, "ENG-1", "comment", now.Add(time.Hour))
+	assert.True(t, ok)
+}
+
+func TestExtend_ExpiredOrUnknownTokenStaysDead(t *testing.T) {
+	s := NewStore()
+	token, err := s.Issue("ENG-1", "run-1", []string{"comment"}, "", time.Minute)
+	require.NoError(t, err)
+
+	now := time.Now()
+	assert.False(t, s.Extend(token, time.Hour, now.Add(2*time.Minute)))
+	assert.False(t, s.Extend("nope", time.Hour, now))
+	assert.False(t, (*Store)(nil).Extend(token, time.Hour, now))
+
+	_, reason, ok := s.Validate(token, "ENG-1", "comment", now.Add(3*time.Minute))
+	assert.False(t, ok)
+	assert.Equal(t, "expired_token", reason)
+}

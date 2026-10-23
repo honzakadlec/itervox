@@ -137,6 +137,11 @@ const (
 	// through to the normal failed path when no fallback is eligible
 	// (CORE-051).
 	TerminalRateLimited TerminalReason = "rate_limited"
+	// TerminalDeferred is used when the before_run hook exits
+	// workspace.HookExitDefer: its precondition is not met yet, so no agent
+	// ran. The event loop re-checks after agent.max_retry_backoff_ms without
+	// consuming a retry; the retry row's error carries "deferred: <reason>".
+	TerminalDeferred TerminalReason = "deferred"
 )
 
 // Pause reasons recorded in State.PauseReasons (issue #42-F).
@@ -683,6 +688,13 @@ type State struct {
 	// pending_reviews.json and re-dispatched by resumePendingReviews once
 	// admission is open again (normally after the restart). Event loop only.
 	PendingReviews map[string]PendingReview
+
+	// ReviewRecheckPending is set when an issue moves from
+	// tracker.review_state to completion_state (its MR landed, so the shared
+	// integration branch moved and merge-order blockers may have cleared).
+	// The next tick re-queues every other issue parked in review_state as a
+	// PendingReview. Session-scoped, event loop only.
+	ReviewRecheckPending bool
 
 	// DependencyCycles holds this tick's strongly-connected-component cycle
 	// alerts over the tick graph (sorted by first member). Recomputed every

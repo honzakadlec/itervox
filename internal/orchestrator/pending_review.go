@@ -149,8 +149,9 @@ func (o *Orchestrator) clearPendingReview(state *State, identifier string) {
 	o.savePendingReviews(state)
 }
 
-// resumePendingReviews dispatches reviews refused by an earlier drain, oldest
-// first, while admission is open and slots are free. Event loop only.
+// resumePendingReviews dispatches pending reviews (refused by an earlier
+// drain, or parked reviews re-queued by requeueParkedReviews), oldest first,
+// while admission is open and slots are free. Event loop only.
 func (o *Orchestrator) resumePendingReviews(ctx context.Context, state *State, now time.Time) {
 	if len(state.PendingReviews) == 0 {
 		return
@@ -198,7 +199,7 @@ func (o *Orchestrator) resumePendingReviews(ctx context.Context, state *State, n
 			ResetReviewChain(state, id)
 			profile = chain[0]
 		}
-		slog.Info("orchestrator: dispatching review refused by the last drain",
+		slog.Info("orchestrator: dispatching pending review",
 			"identifier", id, "profile", profile, "queued_at", pr.QueuedAt)
 		o.dispatchReviewerForIssue(ctx, state, *issue, profile, now)
 		if _, started := state.Running[pr.IssueID]; !started && !state.Draining {

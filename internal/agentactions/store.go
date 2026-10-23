@@ -77,6 +77,29 @@ func (s *Store) IssueScoped(issueIdentifier, runSessionID string, allowedActions
 	return token, nil
 }
 
+// Extend pushes the token's expiry out to now+ttl (never shortening it) so a
+// multi-turn run keeps a live grant past the first turn's TTL. Returns false
+// if the token is unknown or already expired; an expired grant stays dead.
+func (s *Store) Extend(token string, ttl time.Duration, now time.Time) bool {
+	if s == nil || token == "" {
+		return false
+	}
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	grant, ok := s.grants[token]
+	if !ok || now.After(grant.ExpiresAt) {
+		return false
+	}
+	if next := now.Add(ttl); next.After(grant.ExpiresAt) {
+		grant.ExpiresAt = next
+		s.grants[token] = grant
+	}
+	return true
+}
+
 // Revoke immediately invalidates the given token. No-op if the token is empty,
 // the receiver is nil, or the token was never issued.
 func (s *Store) Revoke(token string) {

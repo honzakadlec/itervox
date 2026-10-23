@@ -123,10 +123,25 @@ only the event loop mutates them.
   automation, pending-input resume). Open breakers persist to
   `backend_health.json` via the ledger writer. `agent.backend_fallback` is
   load-time config, NOT in the cfgMu allowlist.
+- **`before_run` exit 3/4** are reserved. The worker never mutates state for
+  them: exit 3 sends a sessionless `EventWorkerExited`/`TerminalInputRequired`
+  (question from `$ITERVOX_HOOK_QUESTION_FILE`), so the reply takes the
+  fresh-dispatch path and re-runs the hook; exit 4 sends `TerminalDeferred`,
+  which the event loop turns into a `RetryEntry` at the SAME attempt, due after
+  `agent.max_retry_backoff_ms`, error `deferred: <reason>`. No new state.
 - `PendingReviews` (M4-close BH-M4-2) holds reviewer dispatches refused while
   draining. It is event-loop state persisted to `pending_reviews.json` (ledger
   writer) and re-dispatched by `resumePendingReviews` once admission reopens;
   the marker is cleared when any reviewer for that issue starts.
+- **Parked-review recheck.** An issue left in `tracker.review_state` (its
+  reviewer could not merge yet: merge-order blocker open, CI red on a stale
+  base) is never polled again. When any issue moves `review_state` →
+  `completion_state`, `noteReviewLanded` sets `State.ReviewRecheckPending`
+  (session-scoped); the next tick's `requeueParkedReviews` fetches
+  `review_state` issues and records each idle one as a `PendingReview`
+  (skipping `auto_review: false` profiles, and doing nothing when
+  `agent.auto_review` is off), so `resumePendingReviews` re-runs its reviewer.
+  At most one re-review per issue per sibling landing — no loop.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -192,10 +207,21 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   must reference its identity and operating instructions via `soul_file` and
   `instructions_file`, typically `.itervox/agents/<name>/SOUL.md` and
   `.itervox/agents/<name>/INSTRUCTIONS.md`.
-- **Prompt assembly order** at dispatch time: SOUL.md → INSTRUCTIONS.md → the
-  per-issue Liquid prompt template. Concatenated and passed to the agent
-  subprocess via stdin/argv depending on backend. SOUL is the compact identity
-  ("who you are"); INSTRUCTIONS is the operational/behavioural rules.
+- **Prompt assembly order** at dispatch time (`runWorker` in
+  `internal/orchestrator/worker.go`): the per-issue Liquid prompt template (the
+  `WORKFLOW.md` body; the reviewer profile gets `agent.reviewer_prompt`
+  instead) → daemon blocks (operator-reply envelope, `## Prior Agent Handoffs`,
+  `## Run Context`) → SOUL.md → INSTRUCTIONS.md → automation instructions →
+  sub-agent roster. Concatenated and passed to the agent subprocess via
+  stdin/argv depending on backend. SOUL is the compact identity ("who you
+  are"); INSTRUCTIONS is the operational/behavioural rules. SOUL/INSTRUCTIONS
+  render with the same Liquid bindings as the body (`issue.*`,
+  `workspace.base_branch`, `run.*`). The body has no binding for the active
+  profile, so keep it profile-neutral and put role-specific steps in
+  INSTRUCTIONS.md rather than gating the body on `profile::` labels (a profile
+  picked via the dashboard, an automation, or `default_profile` carries no
+  label). Full detail: `docs/architecture.md` § "SOUL.md / INSTRUCTIONS.md
+  prompt assembly".
 - **Git policy.** `.itervox/agents/**` is committable — `itervox init` patches the
   root `.gitignore` so the files are not swept under a broad `.itervox/` ignore.
   Conversely, `.itervox/HEARTBEAT.md`, `.itervox/.env`, runtime queue files, and

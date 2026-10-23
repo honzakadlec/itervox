@@ -114,3 +114,20 @@ func processExists(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
+
+func TestRunHookExitCodeCarriesCodeAndOutput(t *testing.T) {
+	dir := t.TempDir()
+	err := workspace.RunHook(context.Background(), "echo 'gate MR !12 not merged'; exit 4", dir, 5000)
+	require.Error(t, err)
+	assert.Equal(t, workspace.HookExitDefer, workspace.HookExitCode(err))
+	var hookErr *workspace.HookExitError
+	require.True(t, errors.As(err, &hookErr))
+	assert.Equal(t, "gate MR !12 not merged", hookErr.Output)
+	assert.Contains(t, err.Error(), "hook_failed")
+}
+
+func TestRunHookExitCodeIsMinusOneForSuccessAndTimeout(t *testing.T) {
+	dir := t.TempDir()
+	assert.Equal(t, -1, workspace.HookExitCode(workspace.RunHook(context.Background(), "true", dir, 5000)))
+	assert.Equal(t, -1, workspace.HookExitCode(workspace.RunHook(context.Background(), "sleep 5", dir, 100)))
+}

@@ -95,7 +95,7 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. Skipped when the issue already left `active_states` during the run (the agent used `move_state`/`mark_merged`, or a human moved it), so an explicit move is never overwritten. |
-| `review_state` | string | `""` | Separates "agent finished" from "work merged". When set, a successful implementer run moves the issue here instead of to `completion_state`, and reviewer runs apply no automatic transition: the reviewer calls `itervox action mark-merged` (profile needs the `mark_merged` action) after the MRs/PRs merge, which moves the issue to `completion_state`. The issue stays open and non-terminal meanwhile, so it is not re-dispatched and its dependents stay blocked. Requires `completion_state`; must not be in `active_states` or `terminal_states`. Empty (default) keeps the previous behaviour. |
+| `review_state` | string | `""` | Separates "agent finished" from "work merged". When set, a successful implementer run moves the issue here instead of to `completion_state`, and reviewer runs apply no automatic transition: the reviewer calls `itervox action mark-merged` (profile needs the `mark_merged` action) after the MRs/PRs merge, which moves the issue to `completion_state`. The issue stays open and non-terminal meanwhile, so it is not re-dispatched and its dependents stay blocked. With `agent.auto_review` on, whenever an issue moves from here to `completion_state` (a sibling MR landed, so the integration branch moved and merge-order blockers may have cleared), the reviewer re-runs once on every other idle issue still here, except issues whose profile sets `auto_review: false`. Requires `completion_state`; must not be in `active_states` or `terminal_states`. Empty (default) keeps the previous behaviour. |
 | `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub, Jira) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
 | `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`) also go through the outbox when it is enabled; with `outbox: false` they are posted directly, and entries left from an earlier outbox-on run stay visible with Retry/Discard but are delivered only once the outbox is enabled again. Load-time only (no runtime setter). |
@@ -221,7 +221,7 @@ Controls where Itervox creates per-issue working directories and how they are ma
 | `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are unaffected. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes (v0.2.0 breaking change from the legacy "clear after every successful run" semantics). |
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
-| `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. |
+| `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. A whole-value `$VAR` reference (e.g. `$RELEASE_BRANCH`) is resolved from the daemon environment, including `.itervox/.env`; an unset variable fails config load. |
 
 ```yaml
 workspace:
@@ -793,7 +793,7 @@ Shell commands run at lifecycle points in each issue's workspace. All hooks run 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `after_create` | string | `""` | Shell command run after the workspace directory is created, before any agent runs. Typically used to clone the repository. |
-| `before_run` | string | `""` | Shell command run once per worker invocation, before the first agent turn of that attempt. Typically used to sync the branch (`git fetch`, `git reset`). |
+| `before_run` | string | `""` | Shell command run once per worker invocation, before the first agent turn of that attempt. Typically used to sync the branch (`git fetch`, `git reset`). Exit 3 asks a question, exit 4 defers the run (see below). |
 | `after_run` | string | `""` | Shell command run after each completed agent turn. |
 | `after_run_required` | bool | `false` | When `true`, a worker whose final `after_run` hook exits non-zero fails the unit instead of completing it — the hook becomes a per-unit completion gate. |
 | `before_remove` | string | `""` | Shell command run before the workspace directory is deleted (when `workspace.auto_clear: true` or on manual removal). |
@@ -805,9 +805,17 @@ All hooks run via `bash -lc` in the issue workspace and inherit the daemon's env
 |---|---|---|
 | `ITERVOX_ISSUE_IDENTIFIER` | all | The issue this workspace belongs to (e.g. `ENG-42`). |
 | `ITERVOX_PROFILE` | `after_create`, `before_run`, `after_run` | The run's resolved agent profile (empty when the run uses bare `agent.command`). Lets a hook skip setup only some profiles need. Not set for `before_remove`. |
+| `ITERVOX_HOOK_QUESTION_FILE` | `before_run` | A file the hook writes its question to before exiting 3. |
 | `ITERVOX_RUN_ID` | `after_create`, `before_run`, `after_run` | The run ID of the current worker invocation; the same value the agent subprocess sees, and shared by all hooks of that run. Not set for `before_remove`, which runs outside a worker run. |
 
 `ITERVOX_BIN`, `ITERVOX_DAEMON_URL` and `ITERVOX_API_TOKEN` are also passed through when the daemon has them set. `before_run` is intentionally per-attempt, not per-turn, so setup hooks do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.
+
+`before_run` reserves two exit codes so a hook can stop a run without spending agent tokens:
+
+- **Exit 3 — ask.** The hook writes its question to `$ITERVOX_HOOK_QUESTION_FILE` (the hook output is used when the file is empty). The issue is queued as input-required with no agent session and the question is posted to the tracker. The reply triggers a fresh dispatch that re-runs `before_run`, with the reply appended to the rendered prompt.
+- **Exit 4 — defer.** The precondition is not met yet (e.g. a merge request is not merged). The first non-empty output line is the reason. No agent runs and no retry is consumed; the issue is re-checked after `agent.max_retry_backoff_ms`, and the dashboard retry queue shows `deferred: <reason>`.
+
+Any other non-zero `before_run` exit fails the attempt and goes through the normal retry path.
 
 By default `after_run` failures are logged and ignored. Set `hooks.after_run_required: true` to turn `after_run` into a per-unit completion gate: a unit whose final `after_run` hook fails does not complete, regardless of the agent's own clean exit. Use it to run `make test` (or any operator-owned verification) as part of the definition of done, complementing the CI-governed merge gate.
 
