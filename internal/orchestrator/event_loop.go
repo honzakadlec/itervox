@@ -2309,6 +2309,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			if entry == nil {
 				break
 			}
+			// runWorker only knows automation runs; a reviewer's Kind lives on
+			// the RunEntry dispatchReviewerForIssue stored. Without it the resumed
+			// reviewer is an untagged worker that reconcile stops in
+			// review_state.
+			if entry.Kind == "" && liveEntry != nil {
+				entry.Kind = liveEntry.Kind
+			}
 			if liveEntry != nil && ev.RunEntry != nil {
 				if ev.RunEntry.TurnCount > 0 {
 					liveEntry.TurnCount = ev.RunEntry.TurnCount
