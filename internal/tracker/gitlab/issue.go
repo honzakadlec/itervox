@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -137,6 +138,16 @@ func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateNa
 	if stateName = strings.TrimSpace(stateName); stateName != "" {
 		payload["labels"] = statusLabel(stateName)
 	}
+	if c.cfg.Assignee != "" {
+		// A failed lookup must not lose the issue: create it unassigned and
+		// say so, since an assignee-filtered daemon will not list it.
+		if id, err := c.resolveAssigneeID(ctx); err != nil {
+			slog.Warn("gitlab: could not resolve tracker.assignee; creating issue unassigned",
+				"assignee", c.cfg.Assignee, "error", err)
+		} else {
+			payload["assignee_ids"] = []int{id}
+		}
+	}
 	raw, err := c.doJSON(ctx, http.MethodPost, c.projectURL("/issues"), payload)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab_create_issue: %w", err)
@@ -189,4 +200,28 @@ func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string)
 	body := itervoxBranchPrefix + branchName + " -->"
 	_, err := c.CreateComment(ctx, issueID, body)
 	return err
+}
+
+// resolveAssigneeID looks up the numeric user id of cfg.Assignee (GitLab's
+// create-issue API takes ids, not usernames) and caches it for the client's
+// lifetime. Failures are not cached, so a transient error is retried.
+func (c *Client) resolveAssigneeID(ctx context.Context) (int, error) {
+	c.assigneeMu.Lock()
+	defer c.assigneeMu.Unlock()
+	if c.assigneeID != 0 {
+		return c.assigneeID, nil
+	}
+	body, _, err := c.get(ctx, c.baseURL+"/users?username="+url.QueryEscape(c.cfg.Assignee))
+	if err != nil {
+		return 0, err
+	}
+	users, _ := body.([]any)
+	for _, u := range users {
+		m, _ := u.(map[string]any)
+		if id, ok := m["id"].(float64); ok && id > 0 {
+			c.assigneeID = int(id)
+			return c.assigneeID, nil
+		}
+	}
+	return 0, fmt.Errorf("no GitLab user named %q", c.cfg.Assignee)
 }

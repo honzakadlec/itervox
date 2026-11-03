@@ -163,3 +163,81 @@ func TestSetIssueBranchPostsMarkerComment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, itervoxBranchPrefix+"feature/foo -->", gotBody["body"])
 }
+
+func TestCreateIssueAssignsConfiguredAssignee(t *testing.T) {
+	var bodies []map[string]any
+	userLookups := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
+		userLookups++
+		assert.Equal(t, "jdoe", r.URL.Query().Get("username"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": float64(42), "username": "jdoe"}})
+	})
+	mux.HandleFunc("/projects/group%2Fproject/issues", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(glIssue(9, "Follow-up", "opened", []string{"status::todo"}))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cfg := defaultTestConfig()
+	cfg.Assignee = "jdoe"
+	client := newTestClient(ts.URL, cfg)
+	for range 2 {
+		_, err := client.CreateIssue(context.Background(), "1", "Follow-up", "body", "todo")
+		require.NoError(t, err)
+	}
+	require.Len(t, bodies, 2)
+	for _, b := range bodies {
+		assert.Equal(t, []any{float64(42)}, b["assignee_ids"])
+	}
+	assert.Equal(t, 1, userLookups, "user id is looked up once and cached")
+}
+
+func TestCreateIssueStillCreatesWhenAssigneeUnknown(t *testing.T) {
+	var gotBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	})
+	mux.HandleFunc("/projects/group%2Fproject/issues", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(glIssue(9, "Follow-up", "opened", nil))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cfg := defaultTestConfig()
+	cfg.Assignee = "nobody"
+	client := newTestClient(ts.URL, cfg)
+	issue, err := client.CreateIssue(context.Background(), "1", "Follow-up", "body", "")
+	require.NoError(t, err)
+	assert.Equal(t, "#9", issue.Identifier)
+	assert.NotContains(t, gotBody, "assignee_ids")
+}
+
+func TestCreateIssueNoAssigneeConfiguredSkipsLookup(t *testing.T) {
+	var gotBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("unexpected user lookup")
+	})
+	mux.HandleFunc("/projects/group%2Fproject/issues", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(glIssue(9, "Follow-up", "opened", nil))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := newTestClient(ts.URL, defaultTestConfig())
+	_, err := client.CreateIssue(context.Background(), "1", "Follow-up", "body", "")
+	require.NoError(t, err)
+	assert.NotContains(t, gotBody, "assignee_ids")
+}

@@ -308,3 +308,39 @@ func TestParseNextLinkExtractsURL(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://gitlab.com/api/v4/projects/1/issues?page=2", next)
 }
+
+func TestFetchFiltersByAssigneeWhenConfigured(t *testing.T) {
+	var got []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/projects/group%2Fproject/issues", func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.Query().Get("assignee_username"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cfg := defaultTestConfig()
+	cfg.Assignee = "jdoe"
+	client := newTestClient(ts.URL, cfg)
+	_, err := client.FetchCandidateIssues(context.Background())
+	require.NoError(t, err)
+	_, err = client.FetchIssuesByStates(context.Background(), []string{"done"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"jdoe", "jdoe", "jdoe"}, got)
+}
+
+func TestFetchOmitsAssigneeFilterWhenUnset(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/projects/group%2Fproject/issues", func(w http.ResponseWriter, r *http.Request) {
+		assert.False(t, r.URL.Query().Has("assignee_username"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := newTestClient(ts.URL, defaultTestConfig())
+	_, err := client.FetchCandidateIssues(context.Background())
+	require.NoError(t, err)
+}

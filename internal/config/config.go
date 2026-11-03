@@ -226,6 +226,10 @@ type TrackerConfig struct {
 	// issue (case-insensitive) for it to be dispatch-eligible, in addition to
 	// being in an active state. Empty string = no label gate.
 	RequiredLabel string
+	// Assignee, when non-empty, limits every issue listing to issues assigned
+	// to this tracker username, so a daemon only sees (and dispatches) its own
+	// dev's work. Supports $VAR; an unset variable means no filter. GitLab only.
+	Assignee string
 	// SingleComment, when true, consolidates every Itervox-managed tracker
 	// comment into one per-issue comment that is edited in place instead of
 	// posting a new comment each time. Input-required questions stay separate.
@@ -790,6 +794,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Username = resolveSecret(strField(tracker, "username", ""))
 	cfg.Tracker.DefaultIssueType = strField(tracker, "default_issue_type", "Task")
 	cfg.Tracker.RequiredLabel = strField(tracker, "required_label", "")
+	cfg.Tracker.Assignee = strings.TrimSpace(resolveSecret(strField(tracker, "assignee", "")))
 	cfg.Tracker.SingleComment = boolField(tracker, "single_comment", false)
 	cfg.Tracker.CommentVisibilityGroup = strField(tracker, "comment_visibility_group", "")
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)

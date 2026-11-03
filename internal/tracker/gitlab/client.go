@@ -55,6 +55,10 @@ type ClientConfig struct {
 	// (status::<ReviewState>) for issues whose agent work is done but not yet
 	// merged. It only changes the label; the issue stays open.
 	ReviewState string
+	// Assignee, when non-empty, adds assignee_username=<Assignee> to every
+	// issue listing, so only that user's issues are seen, and assigns issues
+	// created through CreateIssue to that user so they stay visible.
+	Assignee string
 }
 
 // rateLimitSnapshot holds the most recent RateLimit-* values observed.
@@ -72,6 +76,9 @@ type Client struct {
 	projectPath   string // URL-encoded ProjectSlug, ready to splice into API paths
 	rateMu        sync.RWMutex
 	lastRateLimit *rateLimitSnapshot
+
+	assigneeMu sync.Mutex
+	assigneeID int // cached user id of cfg.Assignee; 0 = not resolved yet
 }
 
 // NewClient creates a new GitLab Client.
