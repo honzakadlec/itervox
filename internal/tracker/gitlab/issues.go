@@ -74,6 +74,9 @@ func (c *Client) fetchByLabel(ctx context.Context, stateName, glState string, ex
 	q.Set("state", glState)
 	q.Set("labels", statusLabel(stateName))
 	q.Set("per_page", strconv.Itoa(pageSize))
+	if c.cfg.Assignee != "" {
+		q.Set("assignee_username", c.cfg.Assignee)
+	}
 	u := c.projectURL("/issues?" + q.Encode())
 	return c.fetchPaginated(ctx, u, extraStates)
 }

@@ -1715,6 +1715,7 @@ func buildTrackerAdapter(cfg *config.Config) (tracker.Tracker, error) {
 			BacklogStates:   cfg.Tracker.BacklogStates,
 			CompletionState: cfg.Tracker.CompletionState,
 			ReviewState:     cfg.Tracker.ReviewState,
+			Assignee:        cfg.Tracker.Assignee,
 		}), nil
 	case "memory":
 		issues := tracker.GenerateDemoIssues(10)

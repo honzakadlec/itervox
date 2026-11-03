@@ -299,6 +299,23 @@ func TestTrackerRequiredLabelExplicit(t *testing.T) {
 	assert.Equal(t, "ready_for_agent", cfg.Tracker.RequiredLabel)
 }
 
+func TestTrackerAssigneeExpandsEnvVar(t *testing.T) {
+	t.Setenv("ITERVOX_TEST_ASSIGNEE", "jdoe")
+	content := "---\ntracker:\n  kind: gitlab\n  api_key: test-token\n  project_slug: g/p\n  assignee: $ITERVOX_TEST_ASSIGNEE\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "jdoe", cfg.Tracker.Assignee)
+}
+
+func TestTrackerAssigneeUnsetEnvVarMeansNoFilter(t *testing.T) {
+	content := "---\ntracker:\n  kind: gitlab\n  api_key: test-token\n  project_slug: g/p\n  assignee: $ITERVOX_TEST_ASSIGNEE_UNSET\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.Tracker.Assignee)
+}
+
 func TestTrackerRequiredLabelDefaultsEmpty(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)
